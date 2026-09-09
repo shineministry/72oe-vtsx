@@ -16,13 +16,11 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # "No jobs were run" is just the path-filter doing its job — worker only
-    # deploys when worker.js/wrangler.toml/src/** change. This keeps Pages
-    # pushes (viewer.js etc.) from spamming Worker deploys.
+    # Skipped when Cloudflare secrets aren't set (e.g. fork) — avoids red failure on Pages-only pushes
+    if: ${{ secrets.CF_API_TOKEN != '' && secrets.CF_ACCOUNT_ID != '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Deploy Worker
-        if: ${{ hashFiles('worker.js') != '' }}
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
