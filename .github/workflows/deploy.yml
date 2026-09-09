@@ -16,11 +16,11 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # Skipped when Cloudflare secrets aren't set (e.g. fork) — avoids red failure on Pages-only pushes
-    if: ${{ secrets.CF_API_TOKEN != '' && secrets.CF_ACCOUNT_ID != '' }}
     steps:
       - uses: actions/checkout@v4
+      # Skip deploy gracefully when Cloudflare secrets aren't set — avoids red failure on Pages-only pushes/forks
       - name: Deploy Worker
+        if: ${{ secrets.CF_API_TOKEN != '' && secrets.CF_ACCOUNT_ID != '' }}
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
