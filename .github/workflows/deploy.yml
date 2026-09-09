@@ -7,10 +7,16 @@ on:
       - 'worker.js'
       - 'wrangler.toml'
       - 'src/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -19,8 +25,11 @@ jobs:
           node-version: 20
 
       - name: Deploy Worker
+        # Skip gracefully if Cloudflare secrets are not configured (prevents 1 error + 1 warning annotation on forks / Pages-only pushes)
+        if: ${{ secrets.CF_API_TOKEN != '' && secrets.CF_ACCOUNT_ID != '' }}
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          command: deploy
+          # Explicit entry-point: repo has no wrangler.toml, so `wrangler deploy` alone fails with "Missing entry-point"
+          command: deploy worker.js --compatibility-date=2024-01-01
