@@ -18,9 +18,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Skip deploy gracefully when Cloudflare secrets aren't set — avoids red failure on Pages-only pushes/forks
+      - name: Check Cloudflare secrets
+        id: cf-check
+        run: |
+          if [ -n "${{ secrets.CF_API_TOKEN }}" ] && [ -n "${{ secrets.CF_ACCOUNT_ID }}" ]; then
+            echo "has=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping Worker deploy — CF secrets not set (Pages-only push)"
+          fi
       - name: Deploy Worker
-        if: ${{ secrets.CF_API_TOKEN != '' && secrets.CF_ACCOUNT_ID != '' }}
+        if: steps.cf-check.outputs.has == 'true'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
