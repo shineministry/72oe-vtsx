@@ -7,6 +7,8 @@ on:
       - 'worker.js'
       - 'wrangler.toml'
       - 'src/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,9 +16,14 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # "No jobs were run" is just the path-filter doing its job — worker only
+    # deploys when worker.js/wrangler.toml/src/** change. This keeps Pages
+    # pushes (viewer.js etc.) from spamming Worker deploys.
     steps:
       - uses: actions/checkout@v4
-      - uses: cloudflare/wrangler-action@v3
+      - name: Deploy Worker
+        if: ${{ hashFiles('worker.js') != '' }}
+        uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
