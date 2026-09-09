@@ -1,4 +1,52 @@
 /* =========================
+   SMART DOWNLOAD (owner-only)
+   Only for shineil (owner) — remembers a successful download verification
+   so the password is not asked on every single download. Other members
+   still always hit the PASSWORD GATE. The cached auth lives only in
+   sessionStorage (cleared on tab close / logout) and expires after
+   SMART_DOWNLOAD_TTL_MS. It also auto-clears if the session token
+   disappears or logoutVault() is called.
+   ========================= */
+const SMART_DOWNLOAD_TTL_MS = 30 * 60 * 1000; // 30 minutes
+function _isSmartDownloadOwner(){
+  try{
+    const vaultUser = (sessionStorage.getItem('vaultUser')||'').toLowerCase();
+    if(vaultUser === 'shineil') return true;
+    const mode = (window.VAULT_MODE || sessionStorage.getItem('vaultMode') || '').toUpperCase();
+    if(['ADMIN','SHINEIL','SHINEIL_PARENTS'].includes(mode)) return true;
+    const sel = document.getElementById('member-select');
+    if(sel && sel.value === 'shineil') return true;
+    try{ const t = JSON.parse(localStorage.getItem('vaultTrustInfo')||'null'); if(t && t.member==='shineil') return true; }catch{}
+    return false;
+  }catch{ return false; }
+}
+function _isDownloadAuthValid(){
+  try{
+    const raw = sessionStorage.getItem('vaultDownloadAuth');
+    if(!raw) return false;
+    const obj = JSON.parse(raw);
+    if(!obj || !obj.expiry) return false;
+    if(Date.now() > obj.expiry){ sessionStorage.removeItem('vaultDownloadAuth'); return false; }
+    const tok = sessionStorage.getItem('vaultSessionToken') || sessionStorage.getItem('vaultSession');
+    if(!tok) return false;
+    return true;
+  }catch{ return false; }
+}
+function _setDownloadAuth(ttl){
+  try{ sessionStorage.setItem('vaultDownloadAuth', JSON.stringify({expiry: Date.now() + (ttl || SMART_DOWNLOAD_TTL_MS)})); }catch{}
+}
+function _clearDownloadAuth(){ try{ sessionStorage.removeItem('vaultDownloadAuth'); }catch{} }
+// Ensure logout clears the smart-download cache even if viewer.js logout path is not hit
+(function(){
+  const _origLogout = window.logoutVault;
+  if(typeof _origLogout === 'function' && !_origLogout._smartWrap){
+    const wrapped = async function(){ _clearDownloadAuth(); return _origLogout.apply(this, arguments); };
+    wrapped._smartWrap = true;
+    window.logoutVault = wrapped;
+  }
+})();
+
+/* =========================
    PHOTO DECRYPT CACHE + QUEUE
    Keyed by docKey → { url, mime }. Shared by the photo grid, the lightbox,
    and the eager pre-decrypt pass kicked off from the loading screen, so a
@@ -139,6 +187,8 @@ async function _decryptPhotoOnce(file, docKey, attempt) {
             await new Promise(r => setTimeout(r, 400 * attempt));
             return _decryptPhotoOnce(file, docKey, attempt + 1);
         }
+        window._photoDecryptErrors = window._photoDecryptErrors || new Map();
+        window._photoDecryptErrors.set(docKey, e.message || String(e));
         console.warn(`[Photo decrypt] Failed for ${docKey} after ${attempt} attempt(s):`, e.message);
         return null;
     }
@@ -210,11 +260,14 @@ displayName){
         }
     }
 
+    // If masterPassword isn't set yet, wait for the trusted session restore
+    if (!window.masterPassword && window._trustSessionReady) {
+        await window._trustSessionReady;
+    }
+
     if(!window.masterPassword){
 
- alert(
- "Session not unlocked. Please log in again."
- );
+ toastNotify('Session not unlocked. Please log in again.', 'warning');
 
  return;
 }
@@ -283,8 +336,10 @@ displayName){
                 const cached = await idbGetDoc(docKey);
                 if (cached) {
                     buffer = cached;
-                } else {
+                } else if (!navigator.onLine) {
                     throw new Error('Document not available offline. Open it online first to cache it.');
+                } else {
+                    throw new Error('Failed to load document: ' + (netErr.message || netErr));
                 }
             } else {
                 throw netErr;
@@ -846,15 +901,35 @@ sidebar.appendChild(thumbWrap);
     }
 }
 
-// INITIAL RENDER
-await renderAllPages();
+// SHOW MODAL FIRST — renderAllPages() measures container.clientWidth, which
+// is only meaningful once the modal is actually visible. Showing it now
+// (instead of after rendering) means we can render pages just once instead
+// of the previous approach of rendering everything, then re-rendering
+// everything again 150ms later once the modal had settled — which was
+// silently doubling the time every document took to open.
+document.getElementById(
+    'modal'
+).style.display = 'block';
 
-// Second render after modal layout settles (so container.clientWidth is accurate)
-setTimeout(async () => { await renderAllPages(); scrollToPage(1); }, 150);
+document.getElementById(
+    'modal-title'
+).textContent =
+displayName;
+
+// Wait a frame so the browser has committed layout for the now-visible
+// modal before we measure container.clientWidth inside renderAllPages().
+await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+// SINGLE RENDER PASS
+await renderAllPages();
+scrollToPage(1);
 
 // =========================
 // DOWNLOAD SECURELY
 // =========================
+// SmartDownload: for the owner (shineil) we cache a successful verification
+// in sessionStorage for SMART_DOWNLOAD_TTL_MS. While cached, downloads skip the
+// password prompt entirely. Other members always require password.
 
 downloadBtn.onclick = async () => {
 
@@ -862,14 +937,19 @@ downloadBtn.onclick = async () => {
 
         if (!currentDecryptedPdf) {
 
-            alert('No file loaded.');
+            toastNotify('No file loaded.', 'warning');
             return;
 
         }
 
-        // PASSWORD GATE
+        const _ownerEligible = _isSmartDownloadOwner();
+        const _hasSmartAuth = _isDownloadAuthValid();
+
+        // Owner with valid smart-auth skips the gate entirely
+        if (!(_ownerEligible && _hasSmartAuth)) {
+        // PASSWORD GATE (owner caches on success; non-owner always prompts)
         const enteredPass =
-        prompt('Enter download password:');
+        prompt(_ownerEligible ? 'Enter download password (smart unlock: you won\'t be asked again for 30 min):' : 'Enter download password:');
 
         if (enteredPass === null)
         return;
@@ -884,7 +964,7 @@ await window.sha256(
 const passkeyRes =
 await fetch(
  "https://backend.shinumaths989.workers.dev/get-secret",
- {
+  {
    method:"POST",
    headers:{
      "Content-Type":
@@ -904,23 +984,41 @@ await fetch(
                 !passkeyResult.success
             ) {
 
-                alert(
+                toastNotify(
                     passkeyResult.message ||
-                    'Incorrect download password.'
+                    'Incorrect download password.', 'error'
                 );
 
                 return;
+            }
+            // Smart: cache success for owner so next downloads are instant
+            if (_ownerEligible) {
+                _setDownloadAuth();
+                toastNotify('Smart Download unlocked — no password needed for 30 min (owner only).', 'success');
             }
 
         } catch (fetchErr) {
 
             console.error(fetchErr);
 
-            alert(
-                'Could not verify password.'
+            // Offline owner case: if we already have decrypted PDF in memory and
+            // this is the owner, allow download even if verification fetch fails
+            // (backend unreachable offline). Non-owners still block.
+            if (_ownerEligible && !navigator.onLine) {
+                toastNotify('Offline — smart download allowed for owner without verification.', 'info');
+                _setDownloadAuth(10*60*1000);
+            } else {
+            toastNotify(
+                'Could not verify password.', 'error'
             );
 
             return;
+            }
+        }
+        } else {
+            // Smart path: owner already verified recently — brief feedback
+            // (no prompt, no network call)
+            console.log('[SmartDownload] Owner bypass — using cached auth, no password asked.');
         }
 
         // DOWNLOAD PDF
@@ -956,33 +1054,62 @@ await fetch(
 
         console.error(err);
 
-        alert('Download failed.');
+        toastNotify('Download failed.', 'error');
 
     }
 
 };
 
-// SHOW MODAL
-
-document.getElementById(
-    'modal'
-).style.display = 'block';
-
-document.getElementById(
-    'modal-title'
-).textContent =
-displayName;
-
 } catch (e) {
 
     console.error(e);
 
-    alert(
-        "Access Denied: Could not decrypt file."
-    );
+    toastNotify(_describeOpenFileError(e), 'error');
 
 }
 
+}
+
+/* Map the various errors openSecureFile() can throw to a message that
+   actually tells the user what went wrong, instead of a single generic
+   "Access Denied: Could not decrypt file" for every failure mode. This is
+   what was making a missing-from-R2 file (HTTP 404) look identical to a
+   genuine decryption failure — they need different fixes (re-upload vs.
+   re-login vs. wrong password). */
+function _describeOpenFileError(e) {
+    const msg = (e && e.message) || '';
+
+    if (/HTTP 404/.test(msg)) {
+        return 'This file was never fully uploaded to storage (not found in R2). Ask the admin to re-upload it from Files Manager.';
+    }
+    if (/HTTP 401|HTTP 403/.test(msg)) {
+        return 'Your session has expired. Please log in again.';
+    }
+    if (/HTTP 5\d\d/.test(msg)) {
+        return 'Storage server error (' + msg.replace('Server error: ', '') + '). Please try again in a moment.';
+    }
+    if (/Corrupted file header/.test(msg)) {
+        return 'This file is missing or corrupted in storage — the backend did not return a valid encrypted file. Ask the admin to re-upload it.';
+    }
+    if (/Missing vault session token/.test(msg)) {
+        return 'Session not found. Please log in again.';
+    }
+    if (/Document not available offline/.test(msg)) {
+        return msg;
+    }
+    if (/PDF viewer not available offline/.test(msg)) {
+        return msg;
+    }
+    if (/Failed to load document/.test(msg)) {
+        return msg;
+    }
+    if (e && e.name === 'OperationError') {
+        // AES-GCM decrypt threw — either the wrong master password was used,
+        // or the encrypted bytes are corrupted/truncated.
+        return 'Could not decrypt this file — wrong password, or the file is corrupted in storage.';
+    }
+
+    return msg ? ('Could not open file: ' + msg) : 'Access Denied: Could not decrypt file.';
 }
 /* =========================
    CLOSE MODAL

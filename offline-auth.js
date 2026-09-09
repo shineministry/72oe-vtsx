@@ -4,7 +4,7 @@
 
    Authentication method: LOCAL PBKDF2 + SHA-256 server-hash,
    stored in IndexedDB (vaultOfflineDB). No server required after
-   first online loginn.
+   first online login.
 
    ALL 7 VAULT MODES are cached on the device after the first
    online login by any member. Every device can then authenticate
@@ -27,7 +27,7 @@
 
 window.SHINE_OFFLINE_AUTH_VERSION = '20260609-clean';
 
-const _WORKER_URL = 'https://backend.shinumaths989.workers.dev';
+const _WORKER_URL = window.BACKEND_URL || 'https://backend.shinumaths989.workers.dev';
 
 // ── IndexedDB setup ────────────────────────────────────────────────────────
 const _AUTH_DB_NAME    = 'vaultOfflineDB';
@@ -100,10 +100,90 @@ async function _sha256Legacy(text) {
 
 // ── Write helpers ──────────────────────────────────────────────────────────
 
+// Encrypt secret using a key derived from the password (separate salt from PBKDF2 hash)
+async function _wrapSecret(secret, password) {
+    const wrapSalt = _randomSalt();
+    const keyMaterial = await crypto.subtle.importKey('raw',
+        new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+    const keyBits = await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', hash: 'SHA-256', salt: Uint8Array.from(wrapSalt.match(/.{2}/g), h => parseInt(h, 16)), iterations: 200000 },
+        keyMaterial, 256);
+    const key = await crypto.subtle.importKey('raw', new Uint8Array(keyBits),
+        { name: 'AES-GCM' }, false, ['encrypt']);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv },
+        key, new TextEncoder().encode(String(secret)));
+    const combined = new Uint8Array(16 + 12 + ct.byteLength);
+    combined.set(Uint8Array.from(wrapSalt.match(/.{2}/g), h => parseInt(h, 16)), 0);
+    combined.set(iv, 16);
+    combined.set(new Uint8Array(ct), 28);
+    return 'w1:' + btoa(String.fromCharCode(...combined));
+}
+
+async function _unwrapSecret(wrapped, password) {
+    if (!wrapped || !wrapped.startsWith('w1:')) return String(password || '');
+    try {
+        const raw = Uint8Array.from(atob(wrapped.slice(3)), c => c.charCodeAt(0));
+        const wrapSalt = Array.from(raw.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join('');
+        const iv = raw.slice(16, 28);
+        const ct = raw.slice(28);
+        const keyMaterial = await crypto.subtle.importKey('raw',
+            new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+        const keyBits = await crypto.subtle.deriveBits(
+            { name: 'PBKDF2', hash: 'SHA-256', salt: Uint8Array.from(wrapSalt.match(/.{2}/g), h => parseInt(h, 16)), iterations: 200000 },
+            keyMaterial, 256);
+        const key = await crypto.subtle.importKey('raw', new Uint8Array(keyBits),
+            { name: 'AES-GCM' }, false, ['decrypt']);
+        const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+        return new TextDecoder().decode(pt);
+    } catch (e) {
+        console.warn('[OfflineAuth] Failed to unwrap secret, falling back to typed password:', e.message);
+        return String(password || '');
+    }
+}
+
+// ── Hash-keyed wrap/unwrap ──────────────────────────────────────────────────
+// Used for "full sync" records (syncAllMembersOffline) where we only ever
+// receive a member's server-computed passwordHash — never their plaintext
+// password. We can't derive a PBKDF2 key from a password we don't have, but
+// we DO get that exact same hash back from the client at offline-login time
+// (offlineLogin recomputes _sha256AuthHash(password) to find the matching
+// record), so the hash itself is a safe, deterministic key to wrap/unwrap
+// the real secret with.
+async function _deriveRawKeyFromHash(passwordHashHex, usage) {
+    const keyBytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(passwordHashHex)));
+    return crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, [usage]);
+}
+
+async function _wrapSecretWithHash(secret, passwordHashHex) {
+    const key = await _deriveRawKeyFromHash(passwordHashHex, 'encrypt');
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(String(secret)));
+    const combined = new Uint8Array(12 + ct.byteLength);
+    combined.set(iv, 0);
+    combined.set(new Uint8Array(ct), 12);
+    return 'w2:' + btoa(String.fromCharCode(...combined));
+}
+
+async function _unwrapSecretWithHash(wrapped, passwordHashHex) {
+    if (!wrapped || !wrapped.startsWith('w2:')) return null;
+    try {
+        const raw = Uint8Array.from(atob(wrapped.slice(3)), c => c.charCodeAt(0));
+        const iv = raw.slice(0, 12);
+        const ct = raw.slice(12);
+        const key = await _deriveRawKeyFromHash(passwordHashHex, 'decrypt');
+        const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+        return new TextDecoder().decode(pt);
+    } catch (e) {
+        console.warn('[OfflineAuth] Failed to unwrap server-hash secret:', e.message);
+        return null;
+    }
+}
+
 async function _saveAuthRecordLocal({ mode, password, secret, token }) {
     const salt         = _randomSalt();
     const passwordHash = await _pbkdf2Hash(password, salt);
-    const loginHash    = await _sha256AuthHash(password);
+    const wrappedSecret = await _wrapSecret(secret || password, password);
     const db           = await _openAuthDB();
 
     return new Promise((res, rej) => {
@@ -111,10 +191,9 @@ async function _saveAuthRecordLocal({ mode, password, secret, token }) {
         tx.objectStore('vault_auth').put({
             id:           mode + '-pbkdf2',
             passwordHash,
-            loginHash,
+            wrappedSecret,
             salt,
             algo:         'pbkdf2-sha256-200k',
-            secret:       String(secret || password),
             token:        token || '',
             mode,
             trusted:      true,
@@ -128,13 +207,22 @@ async function _saveAuthRecordLocal({ mode, password, secret, token }) {
 async function _saveAuthRecordFromServerHash({ mode, passwordHash, secret, token }) {
     const db = await _openAuthDB();
 
+    // Previously `secret` was received but never stored, so offline login
+    // for these records had no wrappedSecret to unwrap and silently fell
+    // back to using the typed password as the decryption key — which is
+    // NOT the same as the real secret, so every file/photo failed to
+    // decrypt offline. Wrap it (keyed off the server passwordHash, since
+    // that's all we have for members whose plaintext password we never see)
+    // so it can be correctly recovered at offline-login time.
+    const wrappedSecret = secret ? await _wrapSecretWithHash(secret, passwordHash) : '';
+
     return new Promise((res, rej) => {
         const tx = db.transaction('vault_auth', 'readwrite');
         tx.objectStore('vault_auth').put({
             id:           mode + '-sha256',
             passwordHash,
+            wrappedSecret,
             algo:         'sha256-server',
-            secret:       String(secret || ''),
             token:        token || '',
             mode,
             trusted:      true,
@@ -171,8 +259,34 @@ async function syncOfflineAuth() {
 // ── Progress helpers (creates a floating toast, always visible) ──
 let _offlineToastId = null;
 
+// Mobile: the toast used to keep its cramped desktop min/max-width, leaving
+// a large empty gap of unused screen beneath/around it on phones. On narrow
+// viewports let it use the available width/height properly instead.
+function _ensureOfflineToastMobileStyles() {
+    if (document.getElementById('_offlineToastMobileStyles')) return;
+    const style = document.createElement('style');
+    style.id = '_offlineToastMobileStyles';
+    style.textContent = `
+        @media (max-width: 640px) {
+            #offline-toast {
+                left: 16px !important;
+                right: 16px !important;
+                bottom: 16px !important;
+                min-width: 0 !important;
+                max-width: none !important;
+                width: auto !important;
+                padding: 16px 18px !important;
+            }
+            #offline-toast-text { font-size: 14px !important; }
+            #offline-toast-label { font-size: 12px !important; }
+        }
+    `;
+    document.head.appendChild(style);
+}
+
 function _showOfflineProgress() {
     _hideOfflineToast();
+    _ensureOfflineToastMobileStyles();
     const toast = document.createElement('div');
     toast.id = 'offline-toast';
     toast.innerHTML =
@@ -251,7 +365,7 @@ async function _markOfflineSyncComplete() {
     }
 }
 
-// ── Silent re-auth: use stored SHA-256 login hash to get a fresh session token ─────
+// ── Silent re-auth: use stored credentials to get a session token ──────────
 async function _silentReAuth() {
     try {
         const db = await _openAuthDB();
@@ -262,21 +376,33 @@ async function _silentReAuth() {
             req.onerror   = () => rej(req.error);
         });
 
-        // Find a pbkdf2 record that has a loginHash stored
-        const record = allRecords.find(r => r.algo === 'pbkdf2-sha256-200k' && r.loginHash);
-        if (!record || !record.loginHash) {
-            console.warn('[OfflineAuth] _silentReAuth: no stored login hash found');
-            return null;
+        // 1) Prefer a pbkdf2 record with a server-issued token — verify it
+        let record = allRecords.find(r => r.algo === 'pbkdf2-sha256-200k' && r.token);
+        if (record && record.token) {
+            const res = await fetch(`${_WORKER_URL}/check-session`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${record.token}`
+                },
+                body: JSON.stringify({})
+            });
+            if (res.ok) return record.token;
         }
 
-        const res = await fetch(`${_WORKER_URL}/get-secret`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ hash: record.loginHash })
-        });
-        if (!res.ok) return null;
-        const data = await res.json();
-        return data.sessionToken || null;
+        // 2) Fallback: any trusted record → generate an offline token
+        record = allRecords.find(r => r.trusted === true);
+        if (record) {
+            const offlineToken = 'offline-' + crypto.randomUUID();
+            // Persist the token back so subsequent calls don't re-generate
+            const tx = db.transaction('vault_auth', 'readwrite');
+            tx.objectStore('vault_auth').put({ ...record, token: offlineToken });
+            console.log('[OfflineAuth] _silentReAuth: generated offline token for trusted user');
+            return offlineToken;
+        }
+
+        console.warn('[OfflineAuth] _silentReAuth: no usable token or trusted record found');
+        return null;
     } catch (e) {
         console.warn('[OfflineAuth] _silentReAuth failed:', e.message);
         return null;
@@ -354,7 +480,12 @@ async function syncAllMembersOffline(_retried) {
         _updateOfflineProgress(0, members.length);
 
     } catch (fetchErr) {
-        console.warn('[OfflineAuth] /sync-offline-members failed:', fetchErr.message);
+        const _offlineToken = sessionStorage.getItem('vaultSessionToken') || sessionStorage.getItem('vaultSession') || '';
+        if (_offlineToken.startsWith('offline-')) {
+            console.log('[OfflineAuth] /sync-offline-members skipped (offline token)');
+        } else {
+            console.warn('[OfflineAuth] /sync-offline-members failed:', fetchErr.message);
+        }
         const is401 = fetchErr.message.includes('401') || fetchErr.message.includes('Unauthorized');
 
         // If unauthorized (and not already a retry), try to silently re-authenticate using stored login hash
@@ -363,17 +494,31 @@ async function syncAllMembersOffline(_retried) {
             if (newToken) {
                 sessionStorage.setItem('vaultSessionToken', newToken);
                 sessionStorage.setItem('vaultSession', newToken);
-                console.log('[OfflineAuth] Re-authenticated, retrying sync...');
-                // Retry the sync with the fresh token (pass _retried=true to prevent loops)
-                return await syncAllMembersOffline(true);
+                // Don't retry if we got an offline token — server won't accept it
+                if (newToken.startsWith('offline-')) {
+                    console.log('[OfflineAuth] Offline token generated, skipping server retry');
+                } else {
+                    console.log('[OfflineAuth] Re-authenticated, retrying sync...');
+                    return await syncAllMembersOffline(true);
+                }
             }
         }
 
-        _setOfflineProgressText(is401
-            ? '🔑 Session expired — log in again to enable offline access'
-            : '⚠️ Sync failed: ' + fetchErr.message);
-        _updateOfflineProgress(1, 1);
-    _offlineToastId = setTimeout(_hideOfflineToast, 10000);
+        if (_offlineToken.startsWith('offline-')) {
+            const hasCached = await _isOfflineDataCached();
+            if (hasCached) {
+                _setOfflineProgressDone('✓ Using offline cache');
+            } else {
+                _setOfflineProgressText('ℹ️ No server access — offline data not available');
+                _updateOfflineProgress(1, 1);
+            }
+        } else {
+            _setOfflineProgressText(is401 && !_retried
+                ? '🔑 Session expired — log in again to enable offline access'
+                : '⚠️ Sync failed: ' + fetchErr.message);
+            _updateOfflineProgress(1, 1);
+        }
+        _offlineToastId = setTimeout(_hideOfflineToast, 10000);
         return { synced: 0, failed: [], error: fetchErr.message };
     }
 
@@ -561,7 +706,7 @@ async function offlineLogin(_ignored, password) {
             return false;
         }
 
-        _restoreSession(match, password);
+        await _restoreSession(match, password);
         console.log('[OfflineAuth] Offline login OK, mode:', window.VAULT_MODE, '| algo:', match.algo);
         return window.masterPassword;
 
@@ -574,8 +719,21 @@ async function offlineLogin(_ignored, password) {
 
 // ── Internal helpers ───────────────────────────────────────────────────────
 
-function _restoreSession(record, passwordFallback) {
-    const secret = record.secret || String(passwordFallback || '');
+async function _restoreSession(record, passwordFallback) {
+    let secret = null;
+
+    if (record.algo === 'sha256-server' && record.wrappedSecret) {
+        // Full-sync record — unwrap using the server passwordHash as the key.
+        secret = await _unwrapSecretWithHash(record.wrappedSecret, record.passwordHash);
+    }
+
+    if (secret === null) {
+        // Own-login record (w1: PBKDF2-from-password), or a server-hash
+        // record with no wrappedSecret at all (older cached data saved
+        // before this fix) — fall back to the previous behavior.
+        secret = await _unwrapSecret(record.wrappedSecret, passwordFallback);
+    }
+
     window.masterPassword = String(secret);
     window.VAULT_MODE     = record.mode || record.id;
     sessionStorage.setItem('vaultMode', window.VAULT_MODE);
@@ -583,7 +741,7 @@ function _restoreSession(record, passwordFallback) {
         sessionStorage.setItem('vaultSessionToken', record.token);
         sessionStorage.setItem('vaultSession',      record.token);
     } else {
-        const offlineToken = 'offline-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+        const offlineToken = 'offline-' + crypto.randomUUID();
         sessionStorage.setItem('vaultSessionToken', offlineToken);
         sessionStorage.setItem('vaultSession',      offlineToken);
     }
@@ -735,35 +893,130 @@ async function idbGetVaultMeta() {
 }
 
 // ── Trust device session restore ──────────────────────────────────────────
+// Unwraps a secret written by features.js's _wrapTrustSecret() into
+// vaultTrustInfo.secret. Must match that function's format exactly:
+// salt(16) + iv(12) + ciphertext, AES-GCM key from PBKDF2(_getDeviceKey()+salt).
+async function _unwrapTrustSecret(wrapped) {
+    if (!wrapped) return '';
+    try {
+        const raw = Uint8Array.from(atob(wrapped), c => c.charCodeAt(0));
+        const salt = raw.slice(0, 16);
+        const iv = raw.slice(16, 28);
+        const ct = raw.slice(28);
+        const deviceKey = typeof _getDeviceKey === 'function' ? _getDeviceKey() : '';
+        const keyMaterial = await crypto.subtle.importKey('raw',
+            new TextEncoder().encode(deviceKey + salt), 'PBKDF2', false, ['deriveBits']);
+        const keyBits = await crypto.subtle.deriveBits(
+            { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 100000 },
+            keyMaterial, 256);
+        const key = await crypto.subtle.importKey('raw', new Uint8Array(keyBits),
+            { name: 'AES-GCM' }, false, ['decrypt']);
+        const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+        return new TextDecoder().decode(pt);
+    } catch (e) {
+        console.warn('[OfflineAuth] Failed to unwrap trust secret:', e.message);
+        return '';
+    }
+}
+
+// ── Refresh a (likely expired) trust-restored session token ────────────────
+// Session tokens minted by the worker expire after 1 hour (see
+// createSessionToken in worker.js), but trust-device info is kept for up to
+// 14 days. That mismatch meant every "remembered" login after the first hour
+// silently restored an EXPIRED token into sessionStorage — every subsequent
+// authenticated call (access log, PIN sync, AI chat, offline caching,
+// status/notifications) then failed its server-side auth check, which is
+// what produced "Failed to load logs", the AI chat "offline mode" message,
+// and the "No server access — offline data not available" banner even while
+// fully online. This mints a fresh token from the still-known secret before
+// the dashboard starts making authenticated calls.
+async function _refreshTrustToken(secret) {
+    if (!secret || typeof navigator === 'undefined' || navigator.onLine === false) return null;
+    try {
+        const enc = new TextEncoder();
+        const normalized = String(secret).trim().replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '').normalize('NFKC');
+
+        // PBKDF2 + SHA-256 (matches auth.js hashPassword(password, true))
+        const salt = enc.encode('vault-pbkdf2-v1');
+        const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(normalized), 'PBKDF2', false, ['deriveBits']);
+        const keyBits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 200000 }, keyMaterial, 256);
+        const slowHash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(keyBits))))
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+
+        // Legacy SHA-256 fallback (matches auth.js hashPassword(password, false))
+        const legacyHash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(normalized))))
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+
+        const tryHash = async (hash) => {
+            const controller = new AbortController();
+            const tid = setTimeout(() => controller.abort(), 8000);
+            try {
+                const res = await fetch(`${_WORKER_URL}/get-secret`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ hash }),
+                    signal: controller.signal
+                });
+                if (!res.ok) return null;
+                const data = await res.json().catch(() => null);
+                return (data && data.success && data.authorized && data.sessionToken) ? data : null;
+            } catch {
+                return null;
+            } finally {
+                clearTimeout(tid);
+            }
+        };
+
+        return (await tryHash(slowHash)) || (await tryHash(legacyHash));
+    } catch (e) {
+        console.warn('[OfflineAuth] _refreshTrustToken failed:', e.message);
+        return null;
+    }
+}
+
 async function restoreTrustSession() {
     try {
         const trust = JSON.parse(localStorage.getItem('vaultTrustInfo') || 'null');
         if (!trust || !trust.member) return false;
         const modeToId = { shineil:'SHINEIL', brother:'KEVIN', father:'PARENTS', mother:'PARENTS', official:'OFFICIAL' };
         const mode = sessionStorage.getItem('vaultMode') || modeToId[trust.member] || 'ADMIN';
-        const db = await _openAuthDB();
-        const allRecords = await new Promise((res, rej) => {
-            const req = db.transaction('vault_auth', 'readonly')
-                          .objectStore('vault_auth').getAll();
-            req.onsuccess = () => res(req.result || []);
-            req.onerror   = () => rej(req.error);
-        });
-        const record = allRecords.find(r => r.mode === mode && r.secret) || allRecords[0];
-        if (record && record.secret) {
-            _restoreSession(record, '');
-            return true;
-        }
-        // Fallback: use secret stored in trust info (set by saveTrustDevice)
+        // trust.secret is encrypted (see features.js _wrapTrustSecret) — never
+        // stored or used raw. Unwrap it here before assigning to masterPassword.
         if (trust.secret) {
-            window.masterPassword = String(trust.secret);
-            window.VAULT_MODE = mode;
-            sessionStorage.setItem('vaultMode', window.VAULT_MODE);
-            if (trust.token) {
-                sessionStorage.setItem('vaultSessionToken', trust.token);
-                sessionStorage.setItem('vaultSession', trust.token);
+            const secret = await _unwrapTrustSecret(trust.secret);
+            if (secret) {
+                window.masterPassword = secret;
+                window.VAULT_MODE = mode;
+                sessionStorage.setItem('vaultMode', window.VAULT_MODE);
+                if (trust.token) {
+                    sessionStorage.setItem('vaultSessionToken', trust.token);
+                    sessionStorage.setItem('vaultSession', trust.token);
+                }
+
+                // Mint a fresh, guaranteed-valid token before returning, so
+                // every call the dashboard makes right after boot succeeds.
+                const fresh = await _refreshTrustToken(secret);
+                if (fresh && fresh.sessionToken) {
+                    sessionStorage.setItem('vaultSessionToken', fresh.sessionToken);
+                    sessionStorage.setItem('vaultSession', fresh.sessionToken);
+                    if (fresh.mode) {
+                        window.VAULT_MODE = fresh.mode;
+                        sessionStorage.setItem('vaultMode', fresh.mode);
+                    }
+                    try {
+                        trust.token = fresh.sessionToken;
+                        localStorage.setItem('vaultTrustInfo', JSON.stringify(trust));
+                    } catch (e) { /* non-fatal */ }
+                    console.log('[OfflineAuth] Trust session token refreshed from server.');
+                } else {
+                    console.warn('[OfflineAuth] Trust token could not be refreshed (offline or server unreachable) — using cached token, which may be expired.');
+                }
+
+                console.log('[OfflineAuth] Trust session restored from vaultTrustInfo.secret');
+                return true;
             }
-            console.log('[OfflineAuth] Trust session restored from vaultTrustInfo.secret');
-            return true;
+            console.warn('[OfflineAuth] restoreTrustSession: could not unwrap stored secret');
+            return false;
         }
         console.warn('[OfflineAuth] restoreTrustSession: no secret found in IDB or trust info');
         return false;

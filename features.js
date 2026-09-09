@@ -5,8 +5,26 @@
    navbar. No additional JS needed.)
 ========================= */
 
+// ============ GLOBAL CONFIG ============
+window.BACKEND_URL = 'https://backend.shinumaths989.workers.dev'; // single source of truth for backend URL
+const WORKER_URL = window.BACKEND_URL;
+
+// Device-specific key for local encryption. Must be in localStorage, not
+// sessionStorage — this key is what unlocks the 14-day "Trust Device"
+// secret in vaultTrustInfo, so it has to survive the tab/app closing.
+// (Previously lived in sessionStorage, which is wiped on session end —
+// meaning the very next visit always failed to decrypt the trust secret
+// and silently fell back to a forced re-login, defeating the feature.)
+function _getDeviceKey() {
+  let key = localStorage.getItem('_device_enc_key');
+  if (!key) {
+    key = Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem('_device_enc_key', key);
+  }
+  return key;
+}
+
 // ============ PASSWORD MANAGER ============
-const WORKER_URL = 'https://backend.shinumaths989.workers.dev'; // your worker URL
 
 // renderPMList, openPasswordManager, closePasswordManager are defined in index.html
 if (typeof renderPMList !== 'function') {
@@ -41,7 +59,7 @@ function _pmStartAutoLock() {
         m.style.display = 'none';
         document.querySelectorAll('#pm-entries-container input[type="text"][data-pm-pass]')
           .forEach(inp => inp.type = 'password');
-        alert('🔒 Password Manager auto-locked after inactivity.');
+        toastNotify('Password Manager auto-locked after inactivity.');
       }
       _pmStopAutoLock();
     }, 120000);
@@ -79,9 +97,7 @@ function togglePMPassword(buttonElement, inputId) {
 async function getAuthHeaders() {
   // Check every token key variant your vault system might be assigning
   const token = sessionStorage.getItem('vaultSessionToken') || 
-                sessionStorage.getItem('vaultSession') || 
-                sessionStorage.getItem('sessionToken') || 
-                localStorage.getItem('sessionToken') || '';
+                sessionStorage.getItem('vaultSession') || '';
                 
   return { 
     'Content-Type': 'application/json', 
@@ -115,13 +131,13 @@ async function savePMEntry() {
   const password = document.getElementById('pm-password').value.trim();
   const notes    = document.getElementById('pm-notes').value.trim();
   const pmMemberEl = document.getElementById('pm-member'); const member   = (pmMemberEl ? pmMemberEl.value : '') || '';
-  if (!site || !password) { alert('Site and password are required.'); return; }
-  if (!member) { alert('Please select which member this password is for.'); return; }
+  if (!site || !password) { toastNotify('Site and password are required.', 'warning'); return; }
+  if (!member) { toastNotify('Please select which member this password is for.', 'warning'); return; }
 
   // Verify we actually have an auth token before attempting the save
   const headers = await getAuthHeaders();
   if (!headers['Authorization'] || headers['Authorization'] === 'Bearer ') {
-    alert('❌ Not logged in. Please unlock your vault first.');
+    toastNotify('Not logged in. Please unlock your vault first.');
     return;
   }
 
@@ -136,7 +152,7 @@ async function savePMEntry() {
   document.getElementById('pm-password').value = '';
   document.getElementById('pm-notes').value    = '';
   const memberSel = document.getElementById('pm-member');
-  if (memberSel) memberSel.value = '';
+  if (memberSel) memberSel.value = window._pmActiveMember || '';
 
   // Then try to sync to server
   try {
@@ -157,7 +173,7 @@ async function savePMEntry() {
       const msg = data.error || data.message || `Server error ${res.status}`;
       // Entry is saved locally; warn but don't block UI
       console.warn(`[PM] Server save failed (entry kept offline): ${msg}`);
-      alert(`⚠️ Saved locally. Will sync when back online.\n(Server: ${msg})`);
+      toastNotify(`Saved locally. Will sync when back online.\n(Server: ${msg})`);
       renderPMList();
       return;
     }
@@ -176,7 +192,7 @@ async function savePMEntry() {
   } catch (err) {
     // Network error — entry already saved to IDB above, just inform user
     console.warn('[PM] Network error during server sync (entry kept offline):', err);
-    alert(`⚠️ Saved locally (offline). Will sync when back online.`);
+    toastNotify(`Saved locally (offline). Will sync when back online.`);
     renderPMList();
   }
 }
@@ -186,7 +202,7 @@ async function savePMEntry() {
 // app or person could paste it later.
 function _pmCopyToClipboard(text, label) {
   navigator.clipboard.writeText(text);
-  alert(label + ' (clipboard clears in 20s)');
+  toastNotify(label + ' (clipboard clears in 20s)');
   setTimeout(() => {
     navigator.clipboard.writeText('').catch(() => {});
   }, 20000);
@@ -198,9 +214,9 @@ async function copyPMPassword(id) {
     const entries = await idbGetAllPMEntries().catch(() => []);
     const entry = entries.find(e => e.id === id);
     if (entry && entry.password) {
-      _pmCopyToClipboard(entry.password, '✅ Password copied! (offline)');
+      _pmCopyToClipboard(entry.password, 'Password copied! (offline)');
     } else {
-      alert('❌ Password not available offline. Connect to the internet first.');
+      toastNotify('Password not available offline. Connect to the internet first.');
     }
     return;
   }
@@ -212,16 +228,16 @@ async function copyPMPassword(id) {
     });
     const data = await res.json();
     if (data.password) {
-      _pmCopyToClipboard(data.password, '✅ Password copied!');
+      _pmCopyToClipboard(data.password, 'Password copied!');
     }
   } catch (err) {
     // Network failed — try IDB cache
     const entries = await idbGetAllPMEntries().catch(() => []);
     const entry = entries.find(e => e.id === id);
     if (entry && entry.password) {
-      _pmCopyToClipboard(entry.password, '✅ Password copied! (cached)');
+      _pmCopyToClipboard(entry.password, 'Password copied! (cached)');
     } else {
-      alert('❌ Could not copy password: ' + err.message);
+      toastNotify('Could not copy password: ' + err.message);
     }
   }
 }
@@ -233,7 +249,8 @@ async function renderPMList() {
     return;
   }
 
-  container.innerHTML = '<div style="text-align:center; padding:12px; color:#64748b;">⏳ Fetching credentials...</div>';
+  container.innerHTML = '<div style="text-align:center; padding:12px; color:#64748b;"><i data-lucide="loader" style="width:16px;height:16px;vertical-align:middle;"></i> Fetching credentials...</div>';
+  if (typeof lucide !== 'undefined') lucide.createIcons();
   
   try {
     const entries = await loadPMEntries();
@@ -254,15 +271,17 @@ async function renderPMList() {
           <span style="font-size:12px; color:#64748b; display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHTML(entry.username || 'No username')}</span>
         </div>
         <div style="display:flex; gap:6px; flex-shrink:0;">
-          <button onclick="copyPMPassword('${entry.id}')" style="padding:6px 10px; border-radius:6px; border:1px solid #cbd5e1; background:#fff; cursor:pointer;">📋 Copy</button>
-          <button onclick="deletePMEntry('${entry.id}')" style="padding:6px 10px; border-radius:6px; border:none; background:#fee2e2; color:#ef4444; cursor:pointer;">🗑️ Delete</button>
+          <button onclick="copyPMPassword('${entry.id}')" style="padding:6px 10px; border-radius:6px; border:1px solid #cbd5e1; background:#fff; cursor:pointer;"><i data-lucide="clipboard" style="width:16px;height:16px;vertical-align:middle;"></i> Copy</button>
+          <button onclick="deletePMEntry('${entry.id}')" style="padding:6px 10px; border-radius:6px; border:none; background:#fee2e2; color:#ef4444; cursor:pointer;"><i data-lucide="trash-2" style="width:16px;height:16px;vertical-align:middle;"></i> Delete</button>
         </div>
       `;
       container.appendChild(row);
     });
+    if (typeof lucide !== 'undefined') lucide.createIcons();
   } catch (err) {
     console.error("Failed to render password vault:", err);
-    container.innerHTML = '<div style="text-align:center; color:#ef4444; padding:12px;">❌ Error loading vault list.</div>';
+    container.innerHTML = '<div style="text-align:center; color:#ef4444; padding:12px;"><i data-lucide="x-circle" style="width:14px;height:14px;vertical-align:middle;"></i> Error loading vault list.</div>';
+    if (typeof lucide !== 'undefined') lucide.createIcons();
   }
 }
 
@@ -291,7 +310,7 @@ async function deletePMEntry(id) {
     renderPMList();
   } catch (err) {
     console.error('deletePMEntry error:', err);
-    alert(`❌ Could not delete: ${err.message}`);
+    toastNotify(`Could not delete: ${err.message}`);
   }
 }
 
@@ -560,7 +579,7 @@ async function generateShareLink(){
      // ADD THIS BLOCK ↓
   const masterPwd = window.masterPassword || masterPassword;
   if(!masterPwd) {
-    alert('Cannot create share link: vault is not unlocked.');
+    toastNotify('Cannot create share link: vault is not unlocked.', 'error');
     return;
   }
    
@@ -615,53 +634,20 @@ body: JSON.stringify({
 
         }else{
 
-            alert(
-            'Could not create share link. Check backend.'
-            );
+            toastNotify('Could not create share link. Check backend.', 'error');
 
         }
 
     }catch(err){
-
         console.error(err);
-
-        // fallback client-side token (no masterPassword embedded)
-        const payload =
-        btoa(JSON.stringify({
-
-            file:
-            shareCurrentFile.file,
-
-            name:
-            shareCurrentFile.name,
-
-            exp:
-            Date.now() +
-            expiry * 3600000,
-
-            pwd:
-            password
-            ? await window.sha256(password)
-            : null
-        }));
-
-        const link =
-        `${location.origin}/share.html?t=${payload}`;
-
-        document.getElementById(
-        'share-link-text'
-        ).textContent = link;
-
-        document.getElementById(
-        'share-link-result'
-        ).style.display = 'block';
+        toastNotify('Could not create share link. Backend unreachable. Please try again later.', 'error');
     }
 }
 
 function copyShareLink(){
     const text = document.getElementById('share-link-text').textContent;
     navigator.clipboard.writeText(text).then(()=>{
-        alert('Link copied to clipboard!');
+        toastNotify('Link copied to clipboard!', 'success');
     }).catch(()=>{
         // Fallback
         const ta = document.createElement('textarea');
@@ -670,7 +656,7 @@ function copyShareLink(){
         ta.select();
         document.execCommand('copy');
         ta.remove();
-        alert('Link copied!');
+        toastNotify('Link copied!', 'success');
     });
 }
 
@@ -718,7 +704,7 @@ function openIDB() {
 
 // ── PM entry encryption helpers ──────────────────────────────────────────
 async function _pmDeriveKey() {
-  const raw = sessionStorage.getItem('vaultSessionToken') || navigator.userAgent || 'pm-default-key';
+  const raw = sessionStorage.getItem('vaultSessionToken') || _getDeviceKey();
   const salt = new TextEncoder().encode('pm-encryption-v1');
   const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(raw), 'PBKDF2', false, ['deriveBits']);
   const keyBits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 10000 }, keyMaterial, 256);
@@ -981,11 +967,13 @@ function togglePin(file, btn){
     if(idx === -1){
         pinnedDocs.push(file);
         btn.classList.add('pinned');
-        btn.textContent = '⭐ Pinned';
+        btn.innerHTML = '<i data-lucide="star" style="width:16px;height:16px;vertical-align:middle;"></i> Pinned';
+        if(window.lucide)lucide.createIcons({node:btn});
     } else {
         pinnedDocs.splice(idx, 1);
         btn.classList.remove('pinned');
-        btn.textContent = '☆ Pin';
+        btn.innerHTML = '<i data-lucide="star" style="width:16px;height:16px;vertical-align:middle;"></i> Pin';
+        if(window.lucide)lucide.createIcons({node:btn});
     }
     savePinned();
     renderPinnedSection();
@@ -1003,7 +991,7 @@ function renderPinnedSection(){
     pinnedDocs.forEach(file=>{
         const chip = document.createElement('div');
         chip.className = 'pinned-chip';
-        chip.innerHTML = `📄 ${escHtml(file.name)} <span style="color:#ef4444;font-size:14px;margin-left:4px;" title="Unpin">✕</span>`;
+        chip.innerHTML = `<i data-lucide="file-text" style="width:16px;height:16px;vertical-align:middle;"></i> ${escHtml(file.name)} <span style="color:#ef4444;font-size:14px;margin-left:4px;cursor:pointer;" title="Unpin"><i data-lucide="x" style="width:14px;height:14px;vertical-align:middle;"></i></span>`;
 chip.onclick = ()=> openSecureFile((file.category === 'PHOTOS' ? "photos/" : "docs/") + file.file, file.name);
        chip.querySelector('span').onclick = (e)=>{
             e.stopPropagation();
@@ -1017,6 +1005,7 @@ chip.onclick = ()=> openSecureFile((file.category === 'PHOTOS' ? "photos/" : "do
         };
         grid.appendChild(chip);
     });
+    if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
 function showPinned(){
@@ -1025,7 +1014,7 @@ function showPinned(){
     if(pinnedDocs.length){
         section.scrollIntoView({behavior:'smooth'});
     } else {
-        alert('No pinned documents yet.\nClick ☆ Pin on any document card to favourite it.');
+        toastNotify('No pinned documents yet. Click the Pin button on any document card to favourite it.', 'info');
     }
 }
 
@@ -1038,7 +1027,7 @@ let compareSide   = null; // 'left' | 'right' – for manual pick
 
 function startCompareMode(){
     if(compareQueue.length === 0){
-        alert('Click ⚖️ Compare on any two document cards first, then use this button — or use Compare from the cards directly.');
+        toastNotify('Click Compare on any two document cards first, then use this button — or use Compare from the cards directly.');
         return;
     }
     openCompareModal();
@@ -1069,7 +1058,8 @@ function updateCompareBar(){
     } else {
         bar.style.display = 'flex';
         const names = compareQueue.map(f=>`"${f.name}"`).join(' vs ');
-        txt.textContent = `⚖️ ${compareQueue.length === 1 ? 'Pick one more: ' + compareQueue[0].name : names}`;
+        txt.innerHTML = `<i data-lucide="scale" style="width:16px;height:16px;vertical-align:middle;"></i> ${compareQueue.length === 1 ? 'Pick one more: ' + compareQueue[0].name : names}`;
+        if(window.lucide)lucide.createIcons({node:txt});
     }
 }
 
@@ -1096,7 +1086,8 @@ async function renderComparePane(side, file){
     const titleEl = document.getElementById(`compare-${side}-title`);
     const contentEl = document.getElementById(`compare-${side}-content`);
     titleEl.textContent = file.name;
-    contentEl.innerHTML = '<div class="compare-select-prompt">⏳ Decrypting & rendering…</div>';
+    contentEl.innerHTML = '<div class="compare-select-prompt"><i data-lucide="loader" style="width:16px;height:16px;vertical-align:middle;"></i> Decrypting & rendering…</div>';
+    if (typeof lucide !== 'undefined') lucide.createIcons();
 
     try {
         const rawPassword = window.masterPassword || masterPassword;
@@ -1196,14 +1187,15 @@ async function renderComparePane(side, file){
 
     } catch (err) {
         console.error(err);
-        contentEl.innerHTML = `<div class="compare-select-prompt" style="color:var(--danger)">❌ Decryption Failed: ${escHtml(err.message)}</div>`;
+        contentEl.innerHTML = `<div class="compare-select-prompt" style="color:var(--danger)"><i data-lucide="x-circle" style="width:16px;height:16px;vertical-align:middle;"></i> Decryption Failed: ${escHtml(err.message)}</div>`;
+        if (typeof lucide !== 'undefined') lucide.createIcons();
     }
 }
    
 function pickCompareDoc(side){
     compareSide = side;
     closeCompareModal();
-    alert(`Click ⚖️ Compare on the document you want for side ${side === 'left' ? 'A (Left)' : 'B (Right)'}, then re-open Compare.`);
+    toastNotify(`Click Compare on the document you want for side ${side === 'left' ? 'A (Left)' : 'B (Right)'}, then re-open Compare.`);
 }
 
 /* =========================
@@ -1243,6 +1235,34 @@ async function checkDocExpiryReminders(){
     }
 }
 
+// Encrypts a secret for storage in localStorage's vaultTrustInfo, keyed to
+// this device (via _getDeviceKey). Used by saveTrustDevice() AND by
+// logoutVault()'s trust-info refresh — anywhere that writes vaultTrustInfo.secret
+// must go through this, never store window.masterPassword raw.
+async function _wrapTrustSecret(secret) {
+  if (!secret) return '';
+  try {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const keyMaterial = await crypto.subtle.importKey('raw',
+      new TextEncoder().encode(_getDeviceKey() + salt),
+      'PBKDF2', false, ['deriveBits']);
+    const keyBits = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 100000 },
+      keyMaterial, 256);
+    const wrapKey = await crypto.subtle.importKey('raw', new Uint8Array(keyBits),
+      { name: 'AES-GCM' }, false, ['encrypt']);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv },
+      wrapKey, new TextEncoder().encode(secret));
+    const combined = new Uint8Array(16 + 12 + ct.byteLength);
+    combined.set(salt, 0); combined.set(iv, 16); combined.set(new Uint8Array(ct), 28);
+    return btoa(String.fromCharCode(...combined));
+  } catch (e) {
+    console.warn('[TrustDevice] Encryption failed, falling back to session-only', e);
+    return '';
+  }
+}
+
 async function saveTrustDevice() {
   const cb = document.getElementById('trust-device');
   if (cb && cb.checked) {
@@ -1253,30 +1273,7 @@ async function saveTrustDevice() {
     const existing = JSON.parse(localStorage.getItem('vaultTrustInfo') || 'null');
     const savedToken = token || (existing && existing.token) || '';
     // Derive an encrypted wrapper for the secret instead of storing raw password
-    const secret = window.masterPassword || '';
-    let wrappedSecret = '';
-    if (secret) {
-      try {
-        const salt = crypto.getRandomValues(new Uint8Array(16));
-        const keyMaterial = await crypto.subtle.importKey('raw',
-          new TextEncoder().encode(navigator.userAgent + salt),
-          'PBKDF2', false, ['deriveBits']);
-        const keyBits = await crypto.subtle.deriveBits(
-          { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 10000 },
-          keyMaterial, 256);
-        const wrapKey = await crypto.subtle.importKey('raw', new Uint8Array(keyBits),
-          { name: 'AES-GCM' }, false, ['encrypt']);
-        const iv = crypto.getRandomValues(new Uint8Array(12));
-        const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv },
-          wrapKey, new TextEncoder().encode(secret));
-        const combined = new Uint8Array(16 + 12 + ct.byteLength);
-        combined.set(salt, 0); combined.set(iv, 16); combined.set(new Uint8Array(ct), 28);
-        wrappedSecret = btoa(String.fromCharCode(...combined));
-      } catch (e) {
-        console.warn('[TrustDevice] Encryption failed, falling back to session-only', e);
-        wrappedSecret = '';
-      }
-    }
+    const wrappedSecret = await _wrapTrustSecret(window.masterPassword || '');
     localStorage.setItem('vaultTrustInfo', JSON.stringify({
       member,
       user: (document.getElementById('user-name')?.value || '').trim(),
@@ -1289,6 +1286,7 @@ async function saveTrustDevice() {
 
 // Post-init hook: called at end of onCaptchaSuccess after initVault()
 function vaultPostInit(){
+  hideAllAuthSteps();
   saveTrustDevice();
    const mode = sessionStorage.getItem("vaultMode");
 
@@ -1429,7 +1427,7 @@ function getCurrentVaultMember() {
   const map = {
     SHINEIL: 'shineil',
     KEVIN: 'brother',
-    OFFICIAL: 'official',
+    OFFICIAL: null, // show all members files
     PARENTS: 'father',
     SHINEIL_PARENTS: 'shineil',
     KEVIN_PARENTS: 'brother',
@@ -1490,15 +1488,29 @@ async function idbMarkNotifRead(id) {
 // Track already-bubbled notification keys so polling only shows truly new ones
 window._notifBubbledKeys = window._notifBubbledKeys || new Set();
 
-async function initVaultNotifications() {
+async function initVaultNotifications(_retried) {
   // Sync from Firestore — server is the single source of truth for all devices
   try {
     const currentUserForSync = sessionStorage.getItem('vaultUser') || 'all';
-    const res = await fetch(`${WORKER_URL}/get-notifications`, {
+    let res = await fetch(`${WORKER_URL}/get-notifications`, {
       method: 'POST',
       headers: await getAuthHeaders(),
       body: JSON.stringify({ user: currentUserForSync, vaultUser: currentUserForSync })
     });
+
+    // If already using an offline token, skip the retry — server won't accept it
+    if (res.status === 401 && !_retried && typeof _silentReAuth === 'function') {
+      const token = sessionStorage.getItem('vaultSessionToken') || sessionStorage.getItem('vaultSession') || '';
+      if (!token.startsWith('offline-')) {
+        const newToken = await _silentReAuth();
+        if (newToken) {
+          sessionStorage.setItem('vaultSessionToken', newToken);
+          sessionStorage.setItem('vaultSession', newToken);
+          return initVaultNotifications(true);
+        }
+      }
+    }
+
     if (res.ok) {
       const data = await res.json();
       const serverNotifs = data.notifications || [];
@@ -1524,7 +1536,12 @@ async function initVaultNotifications() {
       }
       await new Promise((resolve, reject) => { tx2.oncomplete = resolve; tx2.onerror = reject; });
     } else {
-      console.warn(`[Notifications] get-notifications HTTP ${res.status}: ${await res.text().catch(() => '')}`);
+      const token = sessionStorage.getItem('vaultSessionToken') || sessionStorage.getItem('vaultSession') || '';
+      if (token.startsWith('offline-')) {
+        console.log('[Notifications] Offline token, using local IDB only');
+      } else {
+        console.warn(`[Notifications] get-notifications HTTP ${res.status}: ${await res.text().catch(() => '')}`);
+      }
     }
   } catch (e) {
     console.warn('[Notifications] Server sync failed, using local IDB only:', e.message);
@@ -1585,8 +1602,9 @@ function _showNotifWelcomeBubble(notes, idx = 0) {
   const current = notes[idx];
   if (preview && current) {
     const pCls = current.priority || 'info';
-    const pEmojis = { info:'ℹ️', warning:'⚠️', urgent:'🔴' };
-    preview.innerHTML = `<strong style="color:#f8fafc;">${pEmojis[pCls]||'ℹ️'} ${escHtml(current.title || 'Admin Notification')}</strong><br><span style="color:#cbd5e1;">${escHtml((current.body || '').substring(0, 80))}${(current.body||'').length > 80 ? '…' : ''}</span>`;
+    const pEmojis = { info:'<i data-lucide="info" style="width:16px;height:16px;vertical-align:middle;"></i>', warning:'<i data-lucide="alert-triangle" style="width:16px;height:16px;vertical-align:middle;"></i>', urgent:'<i data-lucide="circle-dot" style="width:16px;height:16px;vertical-align:middle;"></i>' };
+    preview.innerHTML = `<strong style="color:#f8fafc;">${pEmojis[pCls]||'<i data-lucide="info" style="width:16px;height:16px;vertical-align:middle;"></i>'} ${escHtml(current.title || 'Admin Notification')}</strong><br><span style="color:#cbd5e1;">${escHtml((current.body || '').substring(0, 80))}${(current.body||'').length > 80 ? '…' : ''}</span>`;
+    if (typeof lucide !== 'undefined') lucide.createIcons();
   }
   // Show progress indicator when there are multiple queued notifications
   let progress = document.getElementById('bubbleNotifProgress');
@@ -1655,13 +1673,13 @@ async function _renderNotifPanel() {
     return `
     <div id="notif-item-${n.id}" onclick="markNotifRead('${n.id}')" style="padding:10px 12px;border-radius:10px;margin-bottom:6px;cursor:pointer;background:${n.read ? 'transparent' : 'rgba(59,130,246,.07)'};border:1px solid ${n.read ? 'transparent' : 'rgba(59,130,246,.15)'};transition:.2s;">
       <div style="display:flex;align-items:flex-start;gap:8px;">
-        <span style="font-size:18px;flex-shrink:0;">${n.type === 'global' ? '📢' : '🎯'}</span>
+        <span style="font-size:18px;flex-shrink:0;">${n.type === 'global' ? '<i data-lucide="megaphone" style="width:16px;height:16px;vertical-align:middle;"></i>' : '<i data-lucide="crosshair" style="width:16px;height:16px;vertical-align:middle;"></i>'}</span>
         <div style="flex:1;min-width:0;">
           <div style="font-weight:${n.read ? '600' : '800'};font-size:13px;color:#0f172a;margin-bottom:2px;">${escHtml(n.title||'Notification')}</div>
           <div style="font-size:12px;color:#475569;line-height:1.5;">${escHtml(n.body||'')}</div>
           <div style="font-size:10px;color:#94a3b8;margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
             <span style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:10px;font-weight:800;background:${pc.bg};color:${pc.c};">${escHtml(pCls.toUpperCase())}</span>
-            <span>${n.type === 'global' ? '🌐 Global' : '🎯 ' + escHtml(n.targets || 'Targeted')}</span>
+            <span>${n.type === 'global' ? '<i data-lucide="globe" style="width:16px;height:16px;vertical-align:middle;"></i> Global' : '<i data-lucide="crosshair" style="width:16px;height:16px;vertical-align:middle;"></i>' + escHtml(n.targets || 'Targeted')}</span>
             <span>${n.timestamp ? new Date(n.timestamp).toLocaleString() : ''}</span>
           </div>
         </div>
@@ -1669,8 +1687,10 @@ async function _renderNotifPanel() {
       </div>
     </div>`;
   }).join('');
+  if (typeof lucide !== 'undefined') lucide.createIcons();
   } catch (e) {
-    if (listEl) listEl.innerHTML = '<div style="text-align:center;color:#94a3b8;padding:24px;font-size:13px;">⚠️ Could not load notifications</div>';
+    if (listEl) listEl.innerHTML = '<div style="text-align:center;color:#94a3b8;padding:24px;font-size:13px;"><i data-lucide="alert-triangle" style="width:16px;height:16px;vertical-align:middle;"></i> Could not load notifications</div>';
+    if (typeof lucide !== 'undefined') lucide.createIcons();
   }
 }
 
@@ -1710,3 +1730,373 @@ document.addEventListener('click', function(e) {
   s.textContent = `@keyframes notifBubblePop { from { opacity:0; transform:scale(.85) translateY(-6px); } to { opacity:1; transform:scale(1) translateY(0); } }`;
   document.head.appendChild(s);
 })();
+
+// ── EXPORT VAULT BACKUP (JSON) ─────────────────────────────────────────
+function exportVaultBackup() {
+  try {
+    const data = window.allFilesData || {};
+    const meta = {
+      exportedAt: new Date().toISOString(),
+      totalCategories: Object.keys(data).length,
+      totalFiles: Object.values(data).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0),
+      categories: {}
+    };
+    Object.keys(data).forEach(function(cat) {
+      meta.categories[cat] = Array.isArray(data[cat]) ? data[cat].length : 0;
+    });
+    const payload = JSON.stringify({ metadata: meta, files: data }, null, 2);
+    const blob = new Blob([payload], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'vault-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch(e) {
+    console.error('exportVaultBackup failed:', e);
+    toastNotify('Export failed: ' + e.message, 'error');
+  }
+}
+
+// ── DARK MODE TOGGLE ────────────────────────────────────────────────────
+function toggleDarkMode() {
+  const isDark = document.body.classList.toggle('dark-mode');
+  localStorage.setItem('vaultDarkMode', isDark ? '1' : '0');
+  const btn = document.getElementById('toggle-dark-mode');
+  if (btn) { btn.innerHTML = isDark ? '<i data-lucide="sun" style="width:16px;height:16px;vertical-align:middle;"></i>' : '<i data-lucide="moon" style="width:16px;height:16px;vertical-align:middle;"></i>'; if(window.lucide)lucide.createIcons({node:btn}); }
+}
+
+// Restore dark mode on page load
+(function() {
+  if (localStorage.getItem('vaultDarkMode') === '1') {
+    document.body.classList.add('dark-mode');
+    const btn = document.getElementById('toggle-dark-mode');
+    if (btn) { btn.innerHTML = '<i data-lucide="sun" style="width:16px;height:16px;vertical-align:middle;"></i>'; if(window.lucide)lucide.createIcons({node:btn}); }
+  }
+  // Also listen for when the button is dynamically re-created
+  const obs = new MutationObserver(function() {
+    const btn = document.getElementById('toggle-dark-mode');
+    if (btn && !btn.dataset.darkInit) {
+      btn.dataset.darkInit = '1';
+      if (document.body.classList.contains('dark-mode')) {
+        btn.innerHTML = '<i data-lucide="sun" style="width:16px;height:16px;vertical-align:middle;"></i>';
+        if(window.lucide)lucide.createIcons({node:btn});
+      }
+    }
+  });
+  obs.observe(document.body, { childList: true, subtree: true });
+})();
+
+// ── QUICK NOTES ─────────────────────────────────────────────────────────
+var _notesEditingId = null;
+
+function _notesKey() { return window.masterPassword || 'vault-default-notes-key'; }
+
+function _notesEncrypt(text) {
+  if (!text) return '';
+  try {
+    var key = _notesKey();
+    var b64 = btoa(unescape(encodeURIComponent(text)));
+    var xor = '';
+    for (var i = 0; i < b64.length; i++) {
+      xor += String.fromCharCode(b64.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+    }
+    return btoa(unescape(encodeURIComponent(xor)));
+  } catch(e) { return text; }
+}
+
+function _notesDecrypt(enc) {
+  if (!enc) return '';
+  try {
+    var key = _notesKey();
+    var xor = decodeURIComponent(escape(atob(enc)));
+    var b64 = '';
+    for (var i = 0; i < xor.length; i++) {
+      b64 += String.fromCharCode(xor.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+    }
+    return decodeURIComponent(escape(atob(b64)));
+  } catch(e) { return enc; }
+}
+
+function _getNotes() {
+  try { return JSON.parse(localStorage.getItem('vaultNotes') || '[]'); } catch(e) { return []; }
+}
+
+function _saveNotes(notes) {
+  localStorage.setItem('vaultNotes', JSON.stringify(notes));
+}
+
+function openNotesModal() {
+  document.getElementById('notesModal').style.display = 'block';
+  renderNotesList();
+}
+
+function closeNotesModal() {
+  document.getElementById('notesModal').style.display = 'none';
+}
+
+function renderNotesList() {
+  var list = document.getElementById('notesList');
+  var notes = _getNotes();
+  var q = (document.getElementById('notesSearch').value || '').toLowerCase();
+  if (q) notes = notes.filter(function(n) { return (n.title||'').toLowerCase().includes(q) || (n.content||'').toLowerCase().includes(q) || (n.category||'').toLowerCase().includes(q); });
+  if (!notes.length) {
+    list.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted);font-size:13px;">No notes yet. Click "+ New Note" to create one.</div>';
+    return;
+  }
+  list.innerHTML = notes.slice().reverse().map(function(n) {
+    var decrypted = _notesDecrypt(n.content || '');
+    var preview = decrypted.slice(0, 80);
+    return '<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="editNote(\'' + n.id + '\')">' +
+      '<div style="flex:1;min-width:0;">' +
+        '<div style="font-weight:700;font-size:14px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escHtml(n.title || 'Untitled') + '</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:3px;">' + escHtml(preview) + (preview.length < decrypted.length ? '…' : '') + '</div>' +
+        '<div style="font-size:11px;color:var(--accent);margin-top:4px;">' + escHtml(n.category || 'General') + '</div>' +
+      '</div>' +
+      '<button onclick="event.stopPropagation();deleteNote(\'' + n.id + '\')" style="background:none;border:none;font-size:18px;cursor:pointer;padding:4px;color:var(--danger);"><i data-lucide="trash-2" style="width:16px;height:16px;vertical-align:middle;"></i></button>' +
+    '</div>';
+  }).join('');
+}
+
+function showNoteEditor() {
+  _notesEditingId = null;
+  document.getElementById('noteEditorTitle').innerHTML = '<i data-lucide="pencil" style="width:16px;height:16px;vertical-align:middle;"></i> New Note';
+  if(window.lucide)lucide.createIcons({node:document.getElementById('noteEditorTitle')});
+  document.getElementById('noteTitle').value = '';
+  document.getElementById('noteContent').value = '';
+  document.getElementById('noteCategory').value = 'General';
+  document.getElementById('notesModal').style.display = 'none';
+  document.getElementById('noteEditorModal').style.display = 'block';
+}
+
+function editNote(id) {
+  var notes = _getNotes();
+  var n = notes.find(function(x) { return x.id === id; });
+  if (!n) return;
+  _notesEditingId = id;
+  document.getElementById('noteEditorTitle').innerHTML = '<i data-lucide="pencil" style="width:16px;height:16px;vertical-align:middle;"></i> Edit Note';
+  if(window.lucide)lucide.createIcons({node:document.getElementById('noteEditorTitle')});
+  document.getElementById('noteTitle').value = n.title || '';
+  document.getElementById('noteContent').value = _notesDecrypt(n.content || '');
+  document.getElementById('noteCategory').value = n.category || 'General';
+  document.getElementById('notesModal').style.display = 'none';
+  document.getElementById('noteEditorModal').style.display = 'block';
+}
+
+function closeNoteEditor() {
+  document.getElementById('noteEditorModal').style.display = 'none';
+  document.getElementById('notesModal').style.display = 'block';
+  renderNotesList();
+}
+
+function saveCurrentNote() {
+  var title = document.getElementById('noteTitle').value.trim() || 'Untitled';
+  var content = document.getElementById('noteContent').value.trim();
+  var category = document.getElementById('noteCategory').value;
+  if (!content) { toastNotify('Please enter some content.', 'warning'); return; }
+  var notes = _getNotes();
+  if (_notesEditingId) {
+    var idx = notes.findIndex(function(x) { return x.id === _notesEditingId; });
+    if (idx >= 0) {
+      notes[idx].title = title;
+      notes[idx].content = _notesEncrypt(content);
+      notes[idx].category = category;
+      notes[idx].updatedAt = Date.now();
+    }
+  } else {
+    notes.push({
+      id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,8),
+      title: title,
+      content: _notesEncrypt(content),
+      category: category,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    });
+  }
+  _saveNotes(notes);
+  closeNoteEditor();
+  document.getElementById('notesModal').style.display = 'block';
+  renderNotesList();
+}
+
+function deleteNote(id) {
+  if (!confirm('Delete this note?')) return;
+  var notes = _getNotes().filter(function(x) { return x.id !== id; });
+  _saveNotes(notes);
+  renderNotesList();
+}
+
+// Auto-decrypt notes on render (already handled in renderNotesList via preview)
+// Full content is decrypted when editing
+// On page load, ensure notes are accessible
+(function() {
+  // Add stub for openNotesModal if JS loads before features.js is done
+  if (typeof window.__stub_openNotesModal !== 'undefined') {
+    window.openNotesModal = function() {
+      document.getElementById('notesModal').style.display = 'block';
+      renderNotesList();
+    };
+  }
+})();
+
+// ── BULK DOWNLOAD ZIP ────────────────────────────────────────────────────
+function getSelectedFiles() {
+  var checks = document.querySelectorAll('.bulk-check:checked');
+  var files = [];
+  checks.forEach(function(cb) {
+    try { files.push(JSON.parse(cb.dataset.file)); } catch(e) {}
+  });
+  return files;
+}
+
+function updateBulkToolbar() {
+  var selected = getSelectedFiles();
+  var toolbar = document.getElementById('bulk-toolbar');
+  var countEl = document.getElementById('bulk-count');
+  var zipBtn = document.getElementById('download-zip-btn');
+  if (toolbar) toolbar.style.display = 'flex';
+  if (countEl) countEl.textContent = selected.length + ' selected';
+  if (zipBtn) zipBtn.style.display = selected.length ? 'inline-flex' : 'none';
+}
+
+function selectAllFiles() {
+  document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.checked = true; });
+  updateBulkToolbar();
+}
+
+function clearFileSelection() {
+  document.querySelectorAll('.bulk-check').forEach(function(cb) { cb.checked = false; });
+  updateBulkToolbar();
+}
+
+async function downloadSelectedAsZip() {
+  var files = getSelectedFiles();
+  if (!files.length) return;
+  if (typeof JSZip === 'undefined') {
+    toastNotify('JSZip library not loaded yet. Please refresh and try again.', 'error');
+    return;
+  }
+
+  // PASSWORD GATE
+  var dlPass = prompt('Enter download password:');
+  if (dlPass === null) return;
+  try {
+    var dlHash = await window.sha256(dlPass);
+    var passRes = await fetch('https://backend.shinumaths989.workers.dev/get-secret', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hash: dlHash })
+    });
+    var passResult = await passRes.json();
+    if (!passResult || !passResult.success) {
+      toastNotify(passResult && passResult.message ? passResult.message : 'Incorrect download password.', 'error');
+      return;
+    }
+    // Restore master password from the /get-secret response so decryption works
+    if (!window.masterPassword && passResult.secret) {
+      window.masterPassword = String(passResult.secret);
+    }
+  } catch (fetchErr) {
+    console.error(fetchErr);
+    toastNotify('Could not verify password.', 'error');
+    return;
+  }
+
+  if (!window.masterPassword) {
+    toastNotify('Session not unlocked. Log in again to enable offline access.', 'error');
+    return;
+  }
+
+  var zip = new JSZip();
+  var token = sessionStorage.getItem('vaultSessionToken') || sessionStorage.getItem('vaultSession') || '';
+  var total = files.length;
+  var done = 0;
+  var failed = [];
+
+  var btn = document.getElementById('download-zip-btn');
+  var origText = btn ? btn.textContent : '';
+  if (btn) { btn.innerHTML = '<i data-lucide="loader" style="width:14px;height:14px;vertical-align:middle;"></i> 0/' + total; if(window.lucide)lucide.createIcons({node:btn}); }
+
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i];
+    try {
+      var buffer = null;
+      // Try IndexedDB cache first (available after offline sync)
+      if (typeof idbGetDoc === 'function') {
+        buffer = await idbGetDoc(f.file).catch(function() { return null; });
+      }
+      // Fall back to server if not cached
+      if (!buffer) {
+        var isPhoto = (f.category && f.category.toUpperCase() === 'PHOTOS');
+        var fetchPath = isPhoto ? 'photos/' + f.file : 'docs/' + f.file;
+        var res = await fetch('https://backend.shinumaths989.workers.dev/' + fetchPath, {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (!res.ok) { failed.push(f.name); continue; }
+        buffer = await res.arrayBuffer();
+      }
+      var decrypted = await decryptBuffer(buffer);
+      if (!decrypted) { failed.push(f.name); continue; }
+      var nameLower = f.name.toLowerCase();
+      var mime = 'application/octet-stream';
+      if (nameLower.endsWith('.pdf')) mime = 'application/pdf';
+      else if (nameLower.endsWith('.jpg') || nameLower.endsWith('.jpeg')) mime = 'image/jpeg';
+      else if (nameLower.endsWith('.png')) mime = 'image/png';
+      else if (nameLower.endsWith('.gif')) mime = 'image/gif';
+      else if (nameLower.endsWith('.webp')) mime = 'image/webp';
+      else if (nameLower.endsWith('.mp4')) mime = 'video/mp4';
+      else if (nameLower.endsWith('.mp3')) mime = 'audio/mpeg';
+      else if (nameLower.endsWith('.json')) mime = 'application/json';
+      else if (nameLower.endsWith('.txt')) mime = 'text/plain';
+      var blob = new Blob([decrypted], { type: mime });
+      zip.file(f.name, blob);
+      done++;
+      if (btn) { btn.innerHTML = '<i data-lucide="loader" style="width:16px;height:16px;vertical-align:middle;"></i>' + done + '/' + total; if(window.lucide)lucide.createIcons({node:btn}); }
+    } catch(e) {
+      failed.push(f.name);
+    }
+  }
+
+  if (!done) {
+    toastNotify('Failed to download any files.', 'error');
+  if (btn) { btn.innerHTML = origText; if (window.lucide) lucide.createIcons({node: btn}); }
+    return;
+  }
+
+  if (btn) { btn.innerHTML = '<i data-lucide="package" style="width:16px;height:16px;vertical-align:middle;"></i> Zipping...'; if(window.lucide)lucide.createIcons({node:btn}); }
+  var zipBlob = await zip.generateAsync({ type: 'blob' });
+  var url = URL.createObjectURL(zipBlob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'vault-bulk-' + new Date().toISOString().slice(0, 10) + '.zip';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  if (btn) btn.textContent = origText;
+  var msg = 'Downloaded ' + done + ' of ' + total + ' files';
+  if (failed.length) msg += '\nFailed: ' + failed.join(', ');
+  toastNotify(msg);
+  clearFileSelection();
+}
+
+function toggleBulkExport() {
+  var toolbar = document.getElementById('bulk-toolbar');
+  if (!toolbar) return;
+  var shown = toolbar.style.display !== 'none' && toolbar.style.display !== '';
+  if (shown) {
+    toolbar.style.display = 'none';
+    clearFileSelection();
+    document.querySelectorAll('.bulk-check-label').forEach(function(lbl) {
+      lbl.style.display = 'none';
+    });
+  } else {
+    toolbar.style.display = 'flex';
+    document.querySelectorAll('.bulk-check-label').forEach(function(lbl) {
+      lbl.style.display = 'flex';
+    });
+  }
+}

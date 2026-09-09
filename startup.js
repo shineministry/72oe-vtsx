@@ -29,11 +29,31 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 // ---- ADVANCED SETTINGS LOGIC ----
 
+function toggleTrustedDevice(enabled) {
+    if (!window.__deviceIntegrity) return;
+    if (enabled) {
+        window.__deviceIntegrity.markTrusted();
+        toastNotify('Device trusted. Security checks will not block login.', 'success');
+    } else {
+        window.__deviceIntegrity.unmarkTrusted();
+        toastNotify('Trust status removed. Aggressive security checks are active.', 'warning');
+    }
+}
+
 document.getElementById('share-gear').onclick = () => {
     document.getElementById('advSettingsModal').classList.add('show');
     document.getElementById('lastSyncTime').textContent = 'Last synced: ' + new Date().toLocaleTimeString();
     const lt = document.getElementById('liteModeToggle');
     if(lt) lt.checked = window.LITE_MODE === true;
+    // Sync trusted device toggle state
+    const td = document.getElementById('trustedDeviceToggle');
+    if (td && window.__deviceIntegrity) {
+        td.checked = window.__deviceIntegrity.isTrusted();
+    }
+    const fp = document.getElementById('deviceFingerprintDisplay');
+    if (fp && window.__deviceIntegrity) {
+        fp.textContent = navigator.userAgent.slice(0, 80) + '...';
+    }
 };
 
 function closeAdvSettings(){
@@ -172,9 +192,9 @@ function importVaultConfig(input){
             const cfg = JSON.parse(e.target.result);
             if(cfg.vaultName){ const b = document.querySelector('.brand-title'); if(b) b.textContent = cfg.vaultName; }
             if(cfg.tabTitle) document.title = cfg.tabTitle;
-            alert('✓ Vault config imported successfully!');
+            toastNotify('Config imported successfully!', 'success');
         } catch(err) {
-            alert('✗ Invalid config file.');
+            toastNotify('Invalid config file.', 'error');
         }
     };
     reader.readAsText(file);
@@ -183,8 +203,8 @@ function importVaultConfig(input){
 function advJsonRepair(){
     const raw = prompt('Paste JSON to validate:');
     if(!raw) return;
-    try { JSON.parse(raw); alert('✓ Valid JSON!'); }
-    catch(e) { alert('✗ Invalid JSON: ' + e.message); }
+    try { JSON.parse(raw); toastNotify('Valid JSON!', 'success'); }
+    catch(e) { toastNotify('Invalid JSON: ' + e.message, 'error'); }
 }
 
 function toggleStealthMode(on){

@@ -24,7 +24,7 @@ try {
             { headers: { "Authorization": "Bearer " + sessionToken }, cache: "no-store" }
         );
 
-        // 🛡️ Firewall / backend errors
+        // Firewall / backend errors
         if (!res.ok) {
             const contentType = res.headers.get('content-type') || '';
             if (contentType.includes('text/html')) {
@@ -55,7 +55,7 @@ try {
         }
 
     } catch (netErr) {
-        // Network failed — try cached file list from IndexedDB
+        // Network failed - try cached file list from IndexedDB
         if (typeof idbGetVaultMeta === 'function') {
             const cached = await idbGetVaultMeta();
             if (cached) {
@@ -72,21 +72,26 @@ try {
     allFilesData = data;
 
     const list = document.getElementById('cat-list');
+const _buildMode = window.VAULT_MODE || sessionStorage.getItem("vaultMode") || "VIEWER";
 list.innerHTML = `
   <li id="nav-home" onclick="selectVaultCategory('HOME')" style="font-weight:700;">
-    <span style="font-size:15px;">🏠</span><span>HOME</span>
+    <span style="font-size:15px;"><i data-lucide="home" style="width:15px;height:15px;"></i></span><span>HOME</span>
   </li>
+  ${_buildMode !== 'OFFICIAL' ? `
   <li id="nav-profile" onclick="selectVaultCategory('PROFILE')" style="font-weight:700;">
-    <span style="font-size:15px;">👤</span><span>PROFILE</span>
-  </li>
+    <span style="font-size:15px;"><i data-lucide="user" style="width:15px;height:15px;"></i></span><span>PROFILE</span>
+  </li>` : ''}
   <li id="nav-photos" onclick="selectVaultCategory('PHOTOS')" style="font-weight:700;">
-    <span style="font-size:15px;">📸</span><span>PHOTOS</span>
+    <span style="font-size:15px;"><i data-lucide="camera" style="width:15px;height:15px;"></i></span><span>PHOTOS</span>
+  </li>
+  <li id="nav-checklist" onclick="selectVaultCategory('CHECKLIST')" style="font-weight:700;">
+    <span style="font-size:15px;"><i data-lucide="check-circle" style="width:15px;height:15px;"></i></span><span>CHECKLIST</span>
   </li>
 `;
 
     const mode = window.VAULT_MODE || sessionStorage.getItem("vaultMode") || "VIEWER";
 
-    // Backend already filters by mode — show ALL returned categories.
+    // Backend already filters by mode - show ALL returned categories.
     // The frontend should NOT re-filter here; trust the backend.
     const categories = Object.keys(data);
 
@@ -97,22 +102,22 @@ list.innerHTML = `
 
     // Category icon map for dark sidebar
     const CAT_ICONS = {
-        'HOME': '🏠', 'PROFILE': '👤', 'Guardian': '👥', 'Visa': '✈️', 'Finance': '💰',
-        'School': '🎓', 'Personal': '👤', 'Residence': '🏡', 'Church': '✝️',
-        'Education': '📚', 'Identity': '🪪', 'Legal': '⚖️', 'Financial': '💳',
-        'Ministry': '🕊️', 'Medical': '🏥', 'Insurance': '🛡️', 'Tax': '📋',
-        'Property': '🏠', 'Vehicle': '🚗', 'Travel': '🌍', 'Work': '💼',
-        'Bank': '🏦', 'Documents': '📄', 'Certificates': '🏅'
+        'HOME': 'home', 'PROFILE': 'user', 'Guardian': 'users', 'Visa': 'plane', 'Finance': 'wallet',
+        'School': 'graduation-cap', 'Personal': 'user', 'Residence': 'home', 'Church': 'cross',
+        'Education': 'book-open', 'Identity': 'contact', 'Legal': 'scale', 'Financial': 'credit-card',
+        'Ministry': 'bird', 'Medical': 'stethoscope', 'Insurance': 'shield', 'Tax': 'clipboard-list',
+        'Property': 'home', 'Vehicle': 'car', 'Travel': 'globe', 'Work': 'briefcase',
+        'Bank': 'landmark', 'Documents': 'file-text', 'Certificates': 'award'
     };
     function getCatIcon(cat) {
-        return CAT_ICONS[cat] || CAT_ICONS[Object.keys(CAT_ICONS).find(k => cat.toLowerCase().includes(k.toLowerCase()))] || '📁';
+        return CAT_ICONS[cat] || CAT_ICONS[Object.keys(CAT_ICONS).find(k => cat.toLowerCase().includes(k.toLowerCase()))] || 'folder';
     }
 
     categories.forEach(cat => {
     if (cat === 'HOME' || cat === 'PROFILE' || cat === 'PHOTOS') return;
     const li = document.createElement('li');
     const icon = getCatIcon(cat);
-    li.innerHTML = `<span style="font-size:15px;">${icon}</span><span>${escHtml(cat)}</span>`;
+    li.innerHTML = `<span style="font-size:15px;"><i data-lucide="${icon}" style="width:15px;height:15px;"></i></span><span>${escHtml(cat)}</span>`;
     li.onclick = () => {
     if (typeof selectVaultCategory === 'function') {
         selectVaultCategory(cat);
@@ -124,6 +129,7 @@ list.appendChild(li);
 });
 
 // Auto-click HOME first
+if (typeof lucide !== 'undefined') lucide.createIcons();
 const homeLi = [...list.querySelectorAll('li')].find(li => li.innerText.trim().includes('HOME'));
 if (homeLi) homeLi.click();
 else if (list.querySelector('li')) list.querySelector('li').click();
@@ -143,7 +149,7 @@ else if (list.querySelector('li')) list.querySelector('li').click();
         color:var(--danger);
         font-weight:700;
     ">
-        🚨 ${escHtml(e.message) || "Failed to load secure database."}
+        <i data-lucide="alert-triangle" style="width:24px;height:24px;color:var(--danger);"></i> ${escHtml(e.message) || "Failed to load secure database."}
     </div>`;
 }
 }
@@ -156,7 +162,7 @@ const profiles = {
 shineil:{
 image:"profile.png",
 name:"SHINEIL KEITH MATHIAS",
-role:"Founder of SHINE MINISTRY • Student • Public Speaker • Digital Creator",
+role:"Founder of SHINE MINISTRY - Student - Public Speaker - Digital Creator",
 
 personal:`
 <b>Full Name:</b> Shineil Keith Mathias<br>
@@ -167,39 +173,36 @@ personal:`
 `,
 
 contact:`
-<b>Phone:</b> +91 8605586173<br>
-<b>Email:</b> shinumaths989@gmail.com<br>
-<b>Website:</b> shine-ministry.com<br>
-<b>Instagram:</b> @shinu_vordenker_7
+<b>Contact via vault support portal</b>
 `,
 
 education:`
 Don Bosco High School<br>
-2020–2026<br>
+2020-2026<br>
 Secondary Education
 `,
 
 skills:`
-• Public Speaking<br>
-• Leadership<br>
-• Mathematics<br>
-• Web Editing
+- Public Speaking<br>
+- Leadership<br>
+- Mathematics<br>
+- Web Editing
 `,
 
 languages:`
-English — Fluent<br>
-Hindi — Fluent<br>
-German — Basic
+English - Fluent<br>
+Hindi - Fluent<br>
+German - Basic
 `,
 
 achievements:`
-• Green House Captain<br>
-• Debate Awards<br>
-• Student Recognition
+- Green House Captain<br>
+- Debate Awards<br>
+- Student Recognition
 `,
 
 experience:`
-Founder — SHINE MINISTRY<br>
+Founder - SHINE MINISTRY<br>
 Digital Projects<br>
 Leadership Activities
 `,
@@ -238,7 +241,7 @@ brother:{
 
 image:"ProfileK.png",
 name:"KEVIN SHREESH MATHIAS",
-role:"Bartender • Hospitality",
+role:"Bartender - Hospitality",
 
 personal:`
 <b>Name:</b> Kevin Shreesh Mathias<br>
@@ -252,16 +255,16 @@ Add Email
 `,
 
 education:`
-Guardian School — SSC<br>
+Guardian School - SSC<br>
 IHM Mumbai<br>
 Flair Mania Bartending Academy
 `,
 
 skills:`
-• Bartending<br>
-• Customer Service<br>
-• POS<br>
-• Inventory
+- Bartending<br>
+- Customer Service<br>
+- POS<br>
+- Inventory
 `,
 
 languages:`
@@ -270,13 +273,13 @@ Hindi
 `,
 
 achievements:`
-Assistant Bartender — Bombay Cartel<br>
-Assistant Bartender — Janwani
+Assistant Bartender - Bombay Cartel<br>
+Assistant Bartender - Janwani
 `,
 
 experience:`
-2023–2025 Bombay Cartel<br>
-Present — Janwani
+2023-2025 Bombay Cartel<br>
+Present - Janwani
 `,
 
 projects:`
@@ -326,7 +329,7 @@ hobbies:`Add`
 
 
 mother:{
-image:"mother.png",
+image:"ProfileKa.png",
 name:"KANCHAN MATHIAS",
 role:"Mother",
 personal:`Add`,
@@ -345,8 +348,8 @@ hobbies:`Add`
 
 };
 
-// ── Category summaries (item 2): short blurb shown above each category's
-// file grid so the user knows at a glance what the category contains. ──
+// -- Category summaries (item 2): short blurb shown above each category's
+// file grid so the user knows at a glance what the category contains. --
 const CAT_SUMMARIES = {
     'Visa':         'Visa applications, approvals, and travel authorization documents.',
     'Guardian':     'Guardian access records and authorizations for trusted contacts.',
@@ -393,8 +396,8 @@ function buildHomeDashboard(){
         ? recents.slice(0,8).map(r => `
             <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;background:#f8fafc;border:1px solid var(--border);margin-bottom:8px;">
                 <div style="overflow:hidden;">
-                    <div style="font-weight:700;font-size:12.5px;color:var(--text-main, #0f172a);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📄 ${esc(r.name)}</div>
-                    <div style="font-size:10.5px;color:var(--muted);margin-top:2px;">${esc(r.category || '')} · ${esc(r.date || '')}</div>
+                    <div style="font-weight:700;font-size:12.5px;color:var(--text-main, #0f172a);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><i data-lucide="file-text" style="width:14px;height:14px;vertical-align:middle;"></i> ${esc(r.name)}</div>
+                    <div style="font-size:10.5px;color:var(--muted);margin-top:2px;">${esc(r.category || '')} - ${esc(r.date || '')}</div>
                 </div>
             </div>`).join('')
         : `<div style="padding:16px;text-align:center;color:var(--muted);font-size:12px;">No files viewed yet</div>`;
@@ -402,7 +405,7 @@ function buildHomeDashboard(){
     const categoriesHTML = categories.length
         ? categories.map(c => `
             <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-radius:12px;background:#f8fafc;border:1px solid var(--border);margin-bottom:8px;">
-                <div style="font-weight:700;font-size:12.5px;color:var(--text-main, #0f172a);">📁 ${esc(c)}</div>
+                <div style="font-weight:700;font-size:12.5px;color:var(--text-main, #0f172a);"><i data-lucide="folder" style="width:14px;height:14px;vertical-align:middle;"></i> ${esc(c)}</div>
                 <div style="font-size:11px;font-weight:800;color:var(--accent);background:#eff6ff;padding:3px 10px;border-radius:999px;">${esc((allFilesData[c]||[]).length)}</div>
             </div>`).join('')
         : `<div style="padding:16px;text-align:center;color:var(--muted);font-size:12px;">No categories</div>`;
@@ -410,32 +413,33 @@ function buildHomeDashboard(){
     return `
     <div style="grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:8px;">
         <div style="background:white;border:1px solid var(--border);border-radius:20px;padding:22px;display:flex;align-items:center;gap:16px;">
-            <div style="font-size:30px;">🗂️</div>
+            <div style="font-size:30px;"><i data-lucide="folder-open" style="width:30px;height:30px;color:var(--accent);"></i></div>
             <div>
                 <div style="font-size:11px;font-weight:800;letter-spacing:.5px;color:var(--muted);">NO. OF FILES IN VAULT</div>
                 <div style="font-size:24px;font-weight:900;color:var(--accent);">${totalFiles}</div>
             </div>
         </div>
         <div style="background:white;border:1px solid var(--border);border-radius:20px;padding:22px;display:flex;align-items:center;gap:16px;">
-            <div style="font-size:30px;">🛡️</div>
+            <div style="font-size:30px;"><i data-lucide="shield" style="width:30px;height:30px;color:var(--success,#16a34a);"></i></div>
             <div>
                 <div style="font-size:11px;font-weight:800;letter-spacing:.5px;color:var(--muted);">SECURITY STATUS</div>
-                <div style="font-size:18px;font-weight:900;color:var(--success,#16a34a);">Protected · AES-256</div>
+                <div style="font-size:18px;font-weight:900;color:var(--success,#16a34a);">Protected - AES-256</div>
             </div>
         </div>
     </div>
 
     <div style="grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin-bottom:8px;">
         <div class="profile-box" style="text-align:left;">
-            <h3>🕘 Files History</h3>
+            <h3><i data-lucide="clock" style="width:16px;height:16px;vertical-align:middle;"></i> Files History</h3>
             ${historyHTML}
         </div>
         <div class="profile-box" style="text-align:left;">
-            <h3>📚 Categories</h3>
+            <h3><i data-lucide="book-open" style="width:16px;height:16px;vertical-align:middle;"></i> Categories</h3>
             ${categoriesHTML}
         </div>
     </div>
     `;
+    if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
 /* =========================
@@ -621,10 +625,10 @@ border-radius:18px;">
 
 <h3>Timeline</h3>
 
-2010 — Born<br>
-2020 — Education<br>
-2024 — Projects<br>
-2025 — Present
+2010 - Born<br>
+2020 - Education<br>
+2024 - Projects<br>
+2025 - Present
 
 </div>
 
@@ -632,6 +636,7 @@ border-radius:18px;">
 
 `;
 
+if (typeof lucide !== 'undefined') lucide.createIcons();
 return;
 }
    
@@ -655,60 +660,103 @@ window.LITE_MODE
 ? files.slice(0,20)
 : files;
 
-visibleFiles.forEach(file=>{
+// -- Section grouping ------------------------------------------------------
+// Group files by their `section` field. Files with no section render first,
+// then each named section renders a coloured header above its files.
+const _secMeta = (allFilesData && allFilesData['_meta']) ? allFilesData['_meta'] : {};
+const _secDefs = Array.isArray(_secMeta[category]) ? _secMeta[category] : [];
+const _secColorMap = {};
+_secDefs.forEach(s => { _secColorMap[s.name] = s.color || '#1a73e8'; });
 
-        const card =
-        document.createElement(
-        'div');
+const _sectionGroups = {};
+const _unsectioned = [];
+visibleFiles.forEach(f => {
+    const s = (f.section || '').trim();
+    if (s) {
+        if (!_sectionGroups[s]) _sectionGroups[s] = [];
+        _sectionGroups[s].push(f);
+    } else {
+        _unsectioned.push(f);
+    }
+});
 
-        card.className =
-        'file-card';
+// Build ordered list: unsectioned first, then each section by definition order
+const _orderedSections = _secDefs.map(s => s.name).filter(n => _sectionGroups[n]);
+// Also include any sections found in files but not in _meta (edge case)
+Object.keys(_sectionGroups).forEach(n => {
+    if (_orderedSections.indexOf(n) === -1) _orderedSections.push(n);
+});
+
+const _driveViewMode = (localStorage.getItem('drive_view_mode') || 'grid');
+    function _isDriveList(){ return document.getElementById('file-grid')?.classList.contains('drive-list'); }
+    window.toggleDriveView = function(mode){
+      localStorage.setItem('drive_view_mode', mode);
+      const grid = document.getElementById('file-grid');
+      if(!grid) return;
+      grid.classList.toggle('drive-list', mode==='list');
+      document.querySelectorAll('.drive-view-toggle button').forEach(b=> b.classList.toggle('active', b.dataset.mode===mode));
+      // re-render current category to switch card structure
+      if(currentCategory && allFilesData[currentCategory]) renderFiles(allFilesData[currentCategory], currentCategory);
+    };
+
+    const _renderFileCard = (file) => {
+
+        const isList = _isDriveList();
+        const card = document.createElement('div');
+        if(isList){
+          card.className = 'drive-list-row';
+          const ext = (file.file||file.name||'').split('.').pop().toLowerCase();
+          const isImg = ['jpg','jpeg','png','gif','webp','bmp'].includes(ext);
+          card.innerHTML = `
+            <div class="drive-list-name"><span class="li-icon ${isImg?'img':''}"><i data-lucide="${isImg?'image':'file-text'}" style="width:14px;height:14px;"></i></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(file.name)}</span></div>
+            <div class="drive-list-col hide-m">${escHtml(file.category||category)}</div>
+            <div class="drive-list-col hide-m">${escHtml(file.date||file.expiry||'-')}</div>
+            <button class="drive-more-btn" onclick="event.stopPropagation(); openDriveMenu(this, ${JSON.stringify(file).replace(/"/g,'&quot;')})" style="opacity:1;"><i data-lucide="more-vertical" style="width:16px;height:16px;"></i></button>
+          `;
+          card.onclick = ()=> openSecureFile((file.category === 'PHOTOS' ? "photos/" : "docs/") + file.file, file.name);
+          grid.appendChild(card);
+          return;
+        }
+
+        card.className = 'file-card drive-card';
 
         // EXPIRY BADGE
         let expiryBadge = '';
         if(file.expiry){
-            const daysLeft = Math.ceil(
-                (new Date(file.expiry) - new Date()) / 86400000
-            );
-            if(daysLeft < 0){
-                expiryBadge = `<div class="expiry-badge expiry-danger">⚠️ Expired</div>`;
-            } else if(daysLeft <= 30){
-                expiryBadge = `<div class="expiry-badge expiry-warn">⏳ Expires in ${daysLeft}d</div>`;
-            } else {
-                expiryBadge = `<div class="expiry-badge expiry-ok">✓ Valid ${daysLeft}d</div>`;
-            }
+            const daysLeft = Math.ceil((new Date(file.expiry) - new Date()) / 86400000);
+            if(daysLeft < 0){ expiryBadge = `<span class="expiry-badge expiry-danger" style="position:absolute;top:8px;right:36px;"><i data-lucide="triangle-alert" style="width:12px;height:12px;"></i> Expired</span>`; }
+            else if(daysLeft <= 30){ expiryBadge = `<span class="expiry-badge expiry-warn" style="position:absolute;top:8px;right:36px;"><i data-lucide="clock" style="width:12px;height:12px;"></i> ${daysLeft}d</span>`; }
+            else { expiryBadge = `<span class="expiry-badge expiry-ok" style="position:absolute;top:8px;right:36px;"><i data-lucide="check" style="width:12px;height:12px;"></i> ${daysLeft}d</span>`; }
         }
-
+        const ext2 = (file.file||file.name||'').split('.').pop().toLowerCase();
+        const isImg = ['jpg','jpeg','png','gif','webp','bmp'].includes(ext2);
         const isPinned = pinnedDocs.some(p => p.file === file.file);
+        card.title = file.name;
+        card.setAttribute('aria-label', file.name);
 
         card.innerHTML = `
-        <div style="
-        font-size:48px;
-        margin-bottom:12px;">
-            📄
-        </div>
-
-        <div style="
-        font-weight:800;
-        line-height:1.5;">
-            ${escHtml(file.name)}
-        </div>
-
+        <label class="bulk-check-label" onclick="event.stopPropagation();" style="position:absolute;top:8px;left:8px;z-index:2;display:none;align-items:center;gap:4px;background:rgba(255,255,255,.92);padding:2px 6px 2px 4px;border-radius:6px;font-size:11px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.18);">
+          <input type="checkbox" class="bulk-check" data-file='${JSON.stringify({name:file.name,file:file.file,category:file.category||category}).replace(/'/g,"&#39;")}' onchange="updateBulkToolbar()" style="cursor:pointer;">
+        </label>
         ${expiryBadge}
-
-        <div class="card-actions">
-            <button class="card-btn card-btn-pin ${isPinned ? 'pinned' : ''}"
-                onclick="event.stopPropagation();togglePin(${JSON.stringify(file).replace(/"/g,'&quot;')},this)">
-                ${isPinned ? '⭐ Pinned' : '☆ Pin'}
-            </button>
-            <button class="card-btn card-btn-share"
-                onclick="event.stopPropagation();openShareModal(${JSON.stringify(file).replace(/"/g,'&quot;')})">
-                🔗 Share
-            </button>
-            <button class="card-btn card-btn-compare"
-                onclick="event.stopPropagation();addToCompare(${JSON.stringify(file).replace(/"/g,'&quot;')})">
-                ⚖️ Compare
-            </button>
+        <div class="drive-card-thumb" style="background:#f1f3f4; position:relative; overflow:hidden; display:flex; align-items:center; justify-content:center; padding:8px;">
+          <canvas class="drive-thumb-canvas" style="max-width:100%; max-height:100%; width:auto; height:auto; background:#fff; box-shadow:0 2px 8px rgba(60,64,67,.12); border:1px solid #e8eaed; border-radius:4px; display:none;"></canvas>
+          <div class="thumb-fallback" style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:#f8f9fa;"><i data-lucide="${isImg ? 'image' : 'file-text'}" style="width:42px;height:42px;color:${isImg ? '#34a853' : '#1967d2'};"></i></div>
+          <div class="thumb-gradient" style="position:absolute; inset:0; pointer-events:none; background:linear-gradient(180deg, transparent 60%, rgba(60,64,67,.06));"></div>
+          ${isPinned ? '<span style="position:absolute;top:8px;left:8px;color:#fbbc04;"><i data-lucide="star" style="width:16px;height:16px;fill:currentColor;"></i></span>' : ''}
+        </div>
+        <div class="drive-card-foot">
+          <div class="doc-type-icon ${isImg?'img':''}"><i data-lucide="${isImg?'image':'file-text'}" style="width:16px;height:16px;"></i></div>
+          <div style="flex:1;min-width:0;">
+            <div class="drive-card-name" title="${escHtml(file.name)}">${escHtml(file.name)}</div>
+            <div class="drive-card-meta">${escHtml(file.category||category)} - ${escHtml(file.date||'')}</div>
+          </div>
+          <button class="drive-more-btn" onclick="event.stopPropagation(); openDriveMenu(this, ${JSON.stringify(file).replace(/"/g,'&quot;')})"><i data-lucide="more-vertical" style="width:16px;height:16px;"></i></button>
+        </div>
+        <div class="drive-card-actions" style="display:flex; gap:6px; padding:8px 10px; border-top:1px solid #e8eaed; background:#f8fafc; justify-content:center; border-radius:0 0 12px 12px;">
+          <button class="drive-action-btn ${isPinned ? 'pinned' : ''}" onclick="event.stopPropagation();togglePin(${JSON.stringify(file).replace(/"/g,'&quot;')},this)" title="Star"><i data-lucide="star" style="width:13px;height:13px;vertical-align:middle;${isPinned ? 'fill:currentColor;' : ''}"></i> Star</button>
+          <button class="drive-action-btn" onclick="event.stopPropagation();openShareModal(${JSON.stringify(file).replace(/"/g,'&quot;')})" title="Share"><i data-lucide="link" style="width:13px;height:13px;vertical-align:middle;"></i> Share</button>
+          <button class="drive-action-btn" onclick="event.stopPropagation();addToCompare(${JSON.stringify(file).replace(/"/g,'&quot;')})" title="Compare"><i data-lucide="scale" style="width:13px;height:13px;vertical-align:middle;"></i> Compare</button>
         </div>
         `;
 
@@ -719,34 +767,86 @@ visibleFiles.forEach(file=>{
     );
 };
 
-// HOVER QUICK PREVIEW
-        card.addEventListener('mouseenter', (e) => {
-            // 📱 Check to disable hover previews on phones, tablets, and mobile touch devices
-            if (window.matchMedia("(max-width: 768px)").matches || ('ontouchstart' in window) || navigator.maxTouchPoints > 0) {
-                return; // Stop right here, don't show the preview
-            }
-            if(!window.LITE_MODE){
-    startHoverPreview(file, e);
-            }
-        });
-
-        card.addEventListener('mousemove', (e) => {
-            // 📱 Check to disable position tracking on other devices
-            if (window.matchMedia("(max-width: 768px)").matches || ('ontouchstart' in window) || navigator.maxTouchPoints > 0) {
-                return;
-            }
-            positionTooltip(e);
-        });
-
-        card.addEventListener('mouseleave', () => {
-            hidePreviewTooltip();
-        });
-
         grid.appendChild(card);
+        // Load preview image in thumb (instead of static icon) - async
+        (function(){
+          const canvas = card.querySelector('.drive-thumb-canvas');
+          const fallback = card.querySelector('.thumb-fallback');
+          if(!canvas || !fallback) return;
+          const tryPreview = async () => {
+            try {
+              if(typeof getPreviewBitmap === 'function' && !window.LITE_MODE){
+                const bmp = await getPreviewBitmap(file);
+                if(bmp){
+                  canvas.width = bmp.width;
+                  canvas.height = bmp.height;
+                  const ctx = canvas.getContext('2d');
+                  if(ctx){ ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(bmp,0,0); canvas.style.display='block'; fallback.style.display='none'; if(window.lucide) lucide.createIcons({node:card}); return; }
+                }
+              }
+            } catch(e){}
+          };
+          if('requestIdleCallback' in window) requestIdleCallback(tryPreview, {timeout:2000}); else setTimeout(tryPreview, 150);
+        })();
+};
 
-    });
+// -- Drive: apply saved view mode before rendering --
+    if(localStorage.getItem('drive_view_mode')==='list') grid.classList.add('drive-list');
+    else grid.classList.remove('drive-list');
 
+    // -- Render unsectioned files first --
+_unsectioned.forEach(f => _renderFileCard(f));
+
+// -- Render each section with a Drive-style header --
+_orderedSections.forEach(secName => {
+    const color = _secColorMap[secName] || '#1a73e8';
+    const hdr = document.createElement('div');
+    const _r = parseInt(color.slice(1,3),16), _g = parseInt(color.slice(3,5),16), _b = parseInt(color.slice(5,7),16);
+    hdr.style.cssText = `grid-column:1/-1;display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:10px;margin-top:14px;background:#fff;border:1px solid #dadce0;`;
+    hdr.innerHTML = `
+        <span style="width:28px;height:28px;border-radius:8px;background:${color};display:flex;align-items:center;justify-content:center;color:#fff;"><i data-lucide="folder" style="width:14px;height:14px;"></i></span>
+        <div style="font-size:13px;font-weight:600;color:#202124;flex:1;">${escHtml(secName)}</div>
+        <span style="font-size:11px;font-weight:600;color:#5f6368;background:#f1f3f4;padding:3px 8px;border-radius:12px;">${_sectionGroups[secName].length} items</span>
+    `;
+    grid.appendChild(hdr);
+    _sectionGroups[secName].forEach(f => _renderFileCard(f));
+});
+
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+    // Drive: sync toolbar counts & chips after render
+    if(typeof window._driveAfterRender === 'function') window._driveAfterRender(category, visibleFiles.length);
 }
+
+// -- Drive 3-dot contextual menu (matches Google Drive) --
+window.openDriveMenu = function(btn, file){
+  let menu = document.getElementById('driveCtxMenu');
+  if(!menu){
+    menu = document.createElement('div');
+    menu.id = 'driveCtxMenu';
+    menu.style.cssText = 'position:fixed;z-index:99999;background:#fff;border:1px solid #dadce0;border-radius:12px;box-shadow:0 4px 16px rgba(60,64,67,.25);padding:6px;min-width:190px;display:flex;flex-direction:column;gap:2px;';
+    document.body.appendChild(menu);
+    document.addEventListener('click', e=>{ if(!menu.contains(e.target) && !e.target.closest('.drive-more-btn')) menu.style.display='none'; });
+    window.addEventListener('scroll', ()=> menu.style.display='none', true);
+  }
+  const r = btn.getBoundingClientRect();
+  menu.innerHTML = `
+    <button onclick="openSecureFile('${(file.category==='PHOTOS'?'photos/':'docs/')+file.file}','${(file.name||'').replace(/'/g,"\\'")}');document.getElementById('driveCtxMenu').style.display='none'" style="display:flex;gap:10px;align-items:center;padding:9px 12px;border:none;background:transparent;text-align:left;cursor:pointer;border-radius:8px;font-size:13px;color:#202124;"><i data-lucide="eye" style="width:16px;height:16px;"></i> Preview</button>
+    <button onclick="openShareModal(${JSON.stringify(file).replace(/"/g,'&quot;')});document.getElementById('driveCtxMenu').style.display='none'" style="display:flex;gap:10px;align-items:center;padding:9px 12px;border:none;background:transparent;text-align:left;cursor:pointer;border-radius:8px;font-size:13px;color:#202124;"><i data-lucide="link" style="width:16px;height:16px;"></i> Share</button>
+    <button onclick="togglePin(${JSON.stringify(file).replace(/"/g,'&quot;')},this);document.getElementById('driveCtxMenu').style.display='none'" style="display:flex;gap:10px;align-items:center;padding:9px 12px;border:none;background:transparent;text-align:left;cursor:pointer;border-radius:8px;font-size:13px;color:#202124;"><i data-lucide="star" style="width:16px;height:16px;"></i> Star</button>
+    <button onclick="addToCompare(${JSON.stringify(file).replace(/"/g,'&quot;')});document.getElementById('driveCtxMenu').style.display='none'" style="display:flex;gap:10px;align-items:center;padding:9px 12px;border:none;background:transparent;text-align:left;cursor:pointer;border-radius:8px;font-size:13px;color:#202124;"><i data-lucide="scale" style="width:16px;height:16px;"></i> Compare</button>
+    <div style="height:1px;background:#e8eaed;margin:4px 0;"></div>
+    <button onclick="navigator.clipboard&&navigator.clipboard.writeText('${escHtml(file.file)}');toastNotify('File name copied','success');document.getElementById('driveCtxMenu').style.display='none'" style="display:flex;gap:10px;align-items:center;padding:9px 12px;border:none;background:transparent;text-align:left;cursor:pointer;border-radius:8px;font-size:13px;color:#5f6368;"><i data-lucide="info" style="width:16px;height:16px;"></i> Details</button>
+  `;
+  if(window.lucide) lucide.createIcons({node:menu});
+  // position: flip if near right edge
+  menu.style.display='flex';
+  let left = r.right - 190;
+  let top = r.bottom + 6;
+  if(left < 8) left = 8;
+  if(top + 180 > window.innerHeight) top = r.top - 180;
+  menu.style.left = left+'px';
+  menu.style.top = top+'px';
+};
 
 /* =========================
    PHOTOS GALLERY
@@ -788,7 +888,8 @@ function renderPhotos() {
 
     grid.innerHTML = '';
     if (photos.length === 0) {
-        grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:60px 20px;background:white;border-radius:20px;"><div style="font-size:48px;margin-bottom:12px;">📸</div><div style="font-weight:700;font-size:16px;color:#64748b;">No photos found</div><div style="font-size:13px;color:#94a3b8;margin-top:6px;">Upload images to the vault to see them here.</div></div>';
+        grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:60px 20px;background:white;border-radius:20px;"><div style="margin-bottom:12px;"><i data-lucide="camera" style="width:48px;height:48px;color:var(--muted);"></i></div><div style="font-weight:700;font-size:16px;color:#64748b;">No photos found</div><div style="font-size:13px;color:#94a3b8;margin-top:6px;">Upload images to the vault to see them here.</div></div>';
+        if (typeof lucide !== 'undefined') lucide.createIcons({node:grid});
         return;
     }
 
@@ -801,7 +902,7 @@ function renderPhotos() {
 
         // If this photo was already decrypted (by a previous visit to this
         // page, the lightbox, or the eager loading-screen preload), paint it
-        // instantly — no spinner, no re-fetch, no re-decrypt.
+        // instantly - no spinner, no re-fetch, no re-decrypt.
         const docKey = (file.file || '').replace(/^\/docs\/|^docs\//, '').replace(/^\/photos\/|^photos\//, '');
         const cached = window._photoDecryptedCache && window._photoDecryptedCache.get(docKey);
         if (cached) {
@@ -817,6 +918,7 @@ function renderPhotos() {
 
     // Store photos for lightbox
     window._galleryPhotos = photos;
+    if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
 async function renderPhotoThumb(container, file, index) {
@@ -825,7 +927,10 @@ async function renderPhotoThumb(container, file, index) {
             ? await decryptPhotoShared(file)
             : null;
         if (!result) {
-            container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:12px;">⚠️</div>';
+            const docKey = (file.file || '').replace(/^\/docs\/|^docs\//, '').replace(/^\/photos\/|^photos\//, '');
+            const reason = (window._photoDecryptErrors && window._photoDecryptErrors.get(docKey)) || 'Unknown error';
+            container.innerHTML = '<div title="'+escHtml(reason)+'" style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:12px;"><i data-lucide="triangle-alert" style="width:16px;height:16px;"></i></div>';
+            if (window.lucide) lucide.createIcons({ node: container });
             return;
         }
         container.innerHTML = '';
@@ -836,7 +941,8 @@ async function renderPhotoThumb(container, file, index) {
         img.dataset.blobUrl = result.url;
         container.appendChild(img);
     } catch (e) {
-        container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:12px;">⚠️</div>';
+        container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:12px;"><i data-lucide="triangle-alert" style="width:16px;height:16px;"></i></div>';
+        if (window.lucide) lucide.createIcons({ node: container });
     }
 }
 
@@ -893,10 +999,11 @@ function renderProfile(memberKey) {
     if (!profile) {
   const card = document.getElementById('profile-card');
   if (card) card.innerHTML = `<div style="padding:30px;text-align:center;color:#64748b;">
-    <div style="font-size:48px;margin-bottom:12px;">👤</div>
+    <div style="margin-bottom:12px;"><i data-lucide="user" style="width:48px;height:48px;color:var(--muted);"></i></div>
     <div style="font-weight:700;font-size:16px;">No profile data for "${escHtml(memberKey)}"</div>
     <div style="font-size:13px;margin-top:8px;">Add this member to the profiles object in vault-data.js</div>
   </div>`;
+  if (typeof lucide !== 'undefined') lucide.createIcons();
   return;
 }
 
@@ -949,9 +1056,10 @@ async function unifiedSearch(){
         return;
     }
 
-    let results = [];
+    // Determine if query looks like a file type search: ".pdf", "pdf", "jpg", etc.
+    const typeQuery = query.replace(/^\.+/, '');
 
-    // FILE NAME SEARCH
+    let results = [];
 
     Object.keys(allFilesData)
     .forEach(category=>{
@@ -963,19 +1071,23 @@ async function unifiedSearch(){
 
         files.forEach(file=>{
 
-            if(
-                file.name
-                .toLowerCase()
-                .includes(query)
-            ){
+            // Search by name, category, or file extension
+            const name   = (file.name   || '').toLowerCase();
+            const cat    = (category    || '').toLowerCase();
+            const ext    = ((file.file  || file.name || '').split('.').pop() || '').toLowerCase();
+            const source = [];
 
-                results.push({
-                    ...file,
-                    category,
-                    source:"Filename"
-                });
+            if (name.includes(query))  source.push('Filename');
+            if (cat.includes(query))   source.push('Category');
+            if (ext.includes(typeQuery) && ext !== typeQuery) source.push('Type');
 
-            }
+            if (source.length === 0) return;
+
+            results.push({
+                ...file,
+                category,
+                source: source.join(', ')
+            });
 
         });
 
@@ -1016,20 +1128,25 @@ async function unifiedSearch(){
     }
 
     results.forEach(file=>{
-
+        const isList = document.getElementById('file-grid')?.classList.contains('drive-list');
+        if(isList){
+          const card = document.createElement('div');
+          card.className = 'drive-list-row';
+          card.innerHTML = `<div class="drive-list-name"><span class="li-icon"><i data-lucide="file-text" style="width:14px;height:14px;"></i></span><span>${escHtml(file.name)}</span></div><div class="drive-list-col hide-m">${escHtml(file.category)}</div><div class="drive-list-col hide-m">${escHtml(file.source)}</div><button class="drive-more-btn" onclick="event.stopPropagation(); openDriveMenu(this, ${JSON.stringify(file).replace(/"/g,'&quot;')})" style="opacity:1;"><i data-lucide="more-vertical" style="width:16px;height:16px;"></i></button>`;
+          card.onclick = ()=> openSecureFile((file.category === 'PHOTOS' ? "photos/" : "docs/") + file.file, file.name);
+          grid.appendChild(card);
+          return;
+        }
         const card =
         document.createElement('div');
 
         card.className =
-        'file-card';
+        'file-card drive-card';
 
         card.innerHTML = `
-
-        <div style="
-        font-size:48px;
-        margin-bottom:12px;">
-            📄
-        </div>
+        <div class="drive-card-thumb" style="height:120px;"><i data-lucide="file-text" style="width:42px;height:42px;color:#1967d2;"></i><div class="thumb-gradient"></div></div>
+        <div class="drive-card-foot"><div class="doc-type-icon"><i data-lucide="file-text" style="width:14px;height:14px;"></i></div><div style="flex:1;min-width:0;"><div class="drive-card-name">${escHtml(file.name)}</div><div class="drive-card-meta">${escHtml(file.category)} - ${escHtml(file.source)}</div></div><button class="drive-more-btn" onclick="event.stopPropagation(); openDriveMenu(this, ${JSON.stringify(file).replace(/"/g,'&quot;')})"><i data-lucide="more-vertical" style="width:16px;height:16px;"></i></button></div>
+        <div style="display:none;">
 
         <div style="
         font-weight:800;
@@ -1065,13 +1182,14 @@ async function unifiedSearch(){
 
     });
 
+    if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
-// ── Mode → allowed member keys (mirrors backend MODE_MEMBERS in worker.js) ──
+// -- Mode -> allowed member keys (mirrors backend MODE_MEMBERS in worker.js) --
 // Frontend member keys map to backend member ids as: shineil, brother, father, mother
 const VAULT_MODE_ALLOWED_MEMBERS = {
     ADMIN:           ["shineil", "brother", "father", "mother"],
-    OFFICIAL:        ["shineil"],
+    OFFICIAL:        ["shineil", "brother", "father", "mother"],
     PARENTS:         ["father", "mother"],
     SHINEIL_PARENTS: ["shineil", "father", "mother"],
     KEVIN_PARENTS:   ["brother", "father", "mother"],
@@ -1091,9 +1209,11 @@ function isMemberAllowedForCurrentMode(memberKey) {
 
 // Called by the HOME page's "Family Members" shortcuts. Unlike the old
 // inline onclick handlers, this checks authorization before opening any
-// profile — closes the leak where a non-admin user could view another
+// profile - closes the leak where a non-admin user could view another
 // member's profile by clicking a HOME shortcut even with the dropdown hidden.
 function openMemberProfileGuarded(memberKey) {
+    const _guardMode = getCurrentVaultMode();
+    if (_guardMode === 'OFFICIAL') return; // no-op in official mode (profile hidden)
     if (!isMemberAllowedForCurrentMode(memberKey)) {
         console.warn('[Vault] Blocked profile access for unauthorized member:', memberKey);
         return;
@@ -1140,3 +1260,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
    renderProfile(getProfileMember());
 }); // <-- THIS MUST EXIST
+
+/* =========================
+   DOCUMENT CHECKLIST (modern table)
+   ========================= */
+// Checklist is rendered as a modern card table in the vault (see index.html).
+// Edit checklist.html standalone editor to add/modify checklist types and documents.
+// Click DEPLOY in checklist.html to push data to localStorage for the vault to read.
+// Both the vault and standalone page share the same localStorage key for statuses.

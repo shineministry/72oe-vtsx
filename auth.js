@@ -3,6 +3,27 @@
 ========================= */
 var masterPassword = "";
 
+/* =========================
+   DEFENSIVE CLEANUP
+   Guarantees no leftover login-step markup — especially the reCAPTCHA
+   widget, whose offline "could not connect" fallback text was showing up
+   below the file list — can ever remain visible once the dashboard is up,
+   no matter which login path (online, offline, TOTP, silent re-auth) got
+   the user there.
+========================= */
+function hideAllAuthSteps() {
+    ['step1', 'step2', 'step3', 'step-totp', 'passkey-wait', 'virtual-keypad-overlay'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+    });
+    // Reset the widget so it isn't left mid-render / showing a stale
+    // "no connection" state next time step3 is actually needed.
+    if (typeof grecaptcha !== 'undefined') {
+        try { grecaptcha.reset(); } catch (e) {}
+    }
+}
+
+
 // ── HTML escape helper (prevents XSS in innerHTML) ──────────────────────
 window.escHtml = function(str) {
   if (str == null) return '';
@@ -185,7 +206,7 @@ function notifyBackendLogout(reason = "Logged out.") {
     } catch(e) {}
 }
 
-function logoutVault( reason = "Logged out.", clearTrust = false ) {
+async function logoutVault( reason = "Logged out.", clearTrust = false ) {
 
     clearTimeout( inactivityTimer );
     if (typeof _sessionTimerInterval !== 'undefined' && _sessionTimerInterval) {
@@ -211,11 +232,16 @@ function logoutVault( reason = "Logged out.", clearTrust = false ) {
             const _trust = JSON.parse(localStorage.getItem('vaultTrustInfo') || 'null');
             if (_trust && _trust.member && _trust.expiry > Date.now()) {
                 const _liveToken = sessionStorage.getItem('vaultSessionToken') || sessionStorage.getItem('vaultSession') || _trust.token || '';
-                const _liveSecret = window.masterPassword || _trust.secret || '';
+                // Never write window.masterPassword raw into localStorage — it must
+                // go through the same encryption saveTrustDevice() uses, or DevTools
+                // > Application > Local Storage would show the master secret in plain text.
+                const _refreshSecret = window.masterPassword
+                    ? await (typeof _wrapTrustSecret === 'function' ? _wrapTrustSecret(window.masterPassword) : Promise.resolve(_trust.secret || ''))
+                    : (_trust.secret || '');
                 localStorage.setItem('vaultTrustInfo', JSON.stringify({
                     ..._trust,
                     token: _liveToken,
-                    secret: _liveSecret
+                    secret: _refreshSecret
                 }));
             }
         } catch(e) { console.warn('[logoutVault] trust info refresh failed:', e); }
@@ -244,7 +270,14 @@ function logoutVault( reason = "Logged out.", clearTrust = false ) {
         }
     } catch(e) { console.log(e); }
 
-    alert(reason);
+    // If user is offline and session expired, show offline notification overlay
+    if (!navigator.onLine && /session expired|session has expired/i.test(reason)) {
+        const _ov = document.getElementById('offline-session-overlay');
+        if (_ov) { _ov.style.display = 'flex'; }
+        return;
+    }
+
+    showNotification('Session Ended', reason || 'Your session has ended.', {type:'warning'});
 
     // Hard refresh to completely clear window context
     location.reload(true);
@@ -265,16 +298,33 @@ function showLogoutOptions() {
     overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
     overlay.innerHTML = `
         <div style="background:#fff;border-radius:20px;padding:28px 24px;max-width:360px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.25);text-align:center;">
-            <div style="font-size:32px;margin-bottom:8px;">🚪</div>
+            <div style="font-size:32px;margin-bottom:8px;"><i data-lucide="log-out" style="width:32px;height:32px;color:#0f172a;"></i></div>
             <div style="font-weight:800;font-size:17px;color:#0f172a;margin-bottom:4px;">Logout Options</div>
             <div style="font-size:13px;color:#64748b;margin-bottom:20px;">How would you like to log out?</div>
-            <button onclick="logoutVault('Logged out completely.', true);document.getElementById('logout-options-overlay').remove();" style="width:100%;padding:14px;border:none;border-radius:12px;background:#ef4444;color:white;font-weight:800;font-size:14px;cursor:pointer;margin-bottom:10px;">🚫 Logout Completely</button>
+            <button onclick="logoutVault('Logged out completely.', true);document.getElementById('logout-options-overlay').remove();" style="width:100%;padding:14px;border:none;border-radius:12px;background:#ef4444;color:white;font-weight:800;font-size:14px;cursor:pointer;margin-bottom:10px;"><i data-lucide="ban" style="width:16px;height:16px;vertical-align:middle;"></i> Logout Completely</button>
             <div style="font-size:11px;color:#94a3b8;margin:-6px 0 14px;">Clears trusted device — you'll need to log in fully next time</div>
-            <button onclick="logoutVault('Logged out.', false);document.getElementById('logout-options-overlay').remove();" style="width:100%;padding:14px;border:1px solid #e2e8f0;border-radius:12px;background:transparent;color:#0f172a;font-weight:700;font-size:14px;cursor:pointer;">🔓 Logout (Keep Trusted)</button>
+            <button onclick="logoutVault('Logged out.', false);document.getElementById('logout-options-overlay').remove();" style="width:100%;padding:14px;border:1px solid #e2e8f0;border-radius:12px;background:transparent;color:#0f172a;font-weight:700;font-size:14px;cursor:pointer;"><i data-lucide="unlock" style="width:16px;height:16px;vertical-align:middle;"></i> Logout (Keep Trusted)</button>
             <div style="font-size:11px;color:#94a3b8;margin-top:4px;">Keeps device trusted for faster login next time</div>
             <button onclick="document.getElementById('logout-options-overlay').remove();" style="margin-top:16px;padding:8px 20px;border:none;border-radius:8px;background:transparent;color:#64748b;font-size:13px;cursor:pointer;">Cancel</button>
         </div>`;
     document.body.appendChild(overlay);
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+function safeShowLogoutOptions() {
+  if (typeof showLogoutOptions === 'function') {
+    showLogoutOptions();
+  } else {
+    setTimeout(function() {
+      if (typeof showLogoutOptions === 'function') {
+        showLogoutOptions();
+      } else {
+        if (confirm('Logout completely?')) {
+          logoutVault('Logged out.', true);
+        }
+      }
+    }, 500);
+  }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -303,14 +353,13 @@ async function searchAI() {
       .toLowerCase();
 
     if (!query) {
-      alert("Type search");
+      toastNotify('Please enter a search term.', 'warning');
       return;
     }
 
     const token =
-      localStorage.getItem(
-        "sessionToken"
-      );
+      sessionStorage.getItem('vaultSessionToken') ||
+      sessionStorage.getItem('vaultSession') || '';
 
     const res =
       await fetch(
@@ -341,26 +390,17 @@ async function searchAI() {
       !data.results ||
       data.results.length === 0
     ) {
-      alert(
-        "No matching document found"
-      );
+      toastNotify('No matching document found.', 'info');
       return;
     }
 
-    alert(
-      "Found in: " +
-      data.results
-      .map(x => x.fileName)
-      .join(", ")
-    );
+    toastNotify('Found in: ' + data.results.map(x => x.fileName).join(', '), 'success');
 
   } catch (err) {
 
     console.error(err);
 
-    alert(
-      "AI Search Failed"
-    );
+    toastNotify('AI Search failed. Please try again.', 'error');
   }
 }
 
@@ -647,6 +687,12 @@ async function submitTOTP() {
     window.VAULT_MODE = result.mode;
     sessionStorage.setItem("vaultMode", result.mode);
 
+    // Successful ADMIN auth is a real, backend-verified credential check —
+    // safe to auto-trust this device on it (no separate secret needed).
+    if (result.mode === "ADMIN" && window.__deviceIntegrity) {
+        window.__deviceIntegrity.markTrusted();
+    }
+
     resetInactivityTimer();
 
        // Derive vaultUser from mode for notification targeting
@@ -699,7 +745,7 @@ async function loginWithTOTP() {
   const purpose = document.getElementById("user-purpose").value.trim();
 
   if (!visitorName || !purpose) {
-    alert("Username and Access Context are required.");
+    toastNotify('Username and Access Context are required.', 'error');
     return;
   }
 
@@ -733,19 +779,27 @@ const SECURITY_QUOTES = [
 
 function initSecurityQuotes() {
   const el = document.getElementById('security-quotes');
-  if (!el) return;
+  if (!el) { setTimeout(initSecurityQuotes, 100); return; }
   let idx = 0;
-  el.textContent = '💬 ' + SECURITY_QUOTES[0];
-  setInterval(() => {
+  el.innerHTML = '<i data-lucide="message-circle" style="width:16px;height:16px;vertical-align:middle;"></i> ' + SECURITY_QUOTES[0];
+  if (typeof lucide !== 'undefined') lucide.createIcons({node:el});
+  if (window._securityQuotesTimer) clearInterval(window._securityQuotesTimer);
+  window._securityQuotesTimer = setInterval(() => {
+    if (el.offsetParent === null) return;
     idx = (idx + 1) % SECURITY_QUOTES.length;
     el.style.opacity = '0';
     setTimeout(() => {
-      el.textContent = '💬 ' + SECURITY_QUOTES[idx];
+      el.innerHTML = '<i data-lucide="message-circle" style="width:16px;height:16px;vertical-align:middle;"></i> ' + SECURITY_QUOTES[idx];
+      if (typeof lucide !== 'undefined') lucide.createIcons({node:el});
       el.style.opacity = '1';
     }, 300);
   }, 10000);
 }
-document.addEventListener('DOMContentLoaded', initSecurityQuotes);
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initSecurityQuotes);
+} else {
+  initSecurityQuotes();
+}
 
 /* ==========================================================
    PRODUCTION MERGED ENGINE: AI BACKGROUND INDEXING PIPELINE
@@ -784,7 +838,7 @@ async function runAIIndexingOnLogin() {
     }
 
     console.log('✦ Vault AI: Scanning and compiling repository documents...');
-    updateAIBtn('indexing', '✦ Indexing...');
+    updateAIBtn('indexing', '<i data-lucide="loader-2" style="width:14px;height:14px;vertical-align:middle;"></i> Indexing...');
 
     // ── 2. DYNAMIC MEMORY SYNCHRONIZATION LOOP ───────────────────────────
     let waited = 0;
@@ -1051,8 +1105,7 @@ async function decryptVaultFile(arrayBuffer) {
 // After successfully deleting the file from storage, also remove its chunks:
 async function deleteFileChunks(fileName) {
   const token = sessionStorage.getItem('vaultSessionToken') ||
-                sessionStorage.getItem('vaultSession') ||
-                localStorage.getItem('sessionToken') || '';
+                sessionStorage.getItem('vaultSession') || '';
   try {
     await fetch('https://backend.shinumaths989.workers.dev/ai-chunk-delete', {
       method: 'POST',
@@ -1067,8 +1120,7 @@ async function deleteFileChunks(fileName) {
 
 async function indexAI(fileUrl, fileName) {
   const token = sessionStorage.getItem('vaultSessionToken') ||
-                sessionStorage.getItem('vaultSession') ||
-                localStorage.getItem('sessionToken') || '';
+                sessionStorage.getItem('vaultSession') || '';
 
   // ── Check if this file's chunks already exist ──
   try {
@@ -1183,17 +1235,19 @@ async function indexAI(fileUrl, fileName) {
 }
 
 function updateAIBtn(state, label) {
-  const btn = document.getElementById('ai-chat-btn');
+  const btn = document.getElementById('ai-fab');
   if (!btn) return;
+  const sparkleIcon = '<i data-lucide="sparkles" style="width:24px;height:24px;"></i>';
   if (state === 'ready') {
-    btn.textContent = '✦ AI';
+    btn.innerHTML = sparkleIcon;
     btn.style.background = 'linear-gradient(135deg,#4285f4,#9b5de5,#f72585)';
     btn.style.animation = 'none';
   } else {
-    btn.textContent = label || '✦ AI';
+    btn.innerHTML = label ? '<span style="font-size:12px;font-weight:800;">'+label+'</span>' : sparkleIcon;
     btn.style.background = 'linear-gradient(135deg,#f59e0b,#d97706)';
-    btn.style.animation = 'aiPulse 1.5s infinite';
+    btn.style.animation = 'none';
   }
+  if (typeof lucide !== 'undefined') lucide.createIcons({ nodes: [btn] });
 }
 
 let aiChatHistory = [];
@@ -1215,7 +1269,7 @@ function chipAsk(q) {
 
 function addSpeakButton(messageElement) {
     const btn = document.createElement("button");
-    btn.textContent = "🔊 Listen";
+    btn.innerHTML = '<i data-lucide="volume-2" style="width:14px;height:14px;vertical-align:middle;"></i> Listen';
     btn.style.cssText = `
         margin-top: 8px;
         background: none;
@@ -1235,17 +1289,25 @@ function addSpeakButton(messageElement) {
         utterance.pitch = 1;
         if (speechSynthesis.speaking) {
             speechSynthesis.cancel();
-            btn.textContent = "🔊 Listen";
+btn.innerHTML = '<i data-lucide="volume-2" style="width:14px;height:14px;vertical-align:middle;"></i> Listen';
+            if (typeof lucide !== 'undefined') lucide.createIcons({ nodes: [btn] });
             return;
         }
         utterance.onstart = () => btn.textContent = "⏹ Stop";
-        utterance.onend = () => btn.textContent = "🔊 Listen";
+        utterance.onend = () => { btn.innerHTML = '<i data-lucide="volume-2" style="width:14px;height:14px;vertical-align:middle;"></i> Listen'; if (typeof lucide !== 'undefined') lucide.createIcons({ nodes: [btn] }); };
         speechSynthesis.speak(utterance);
     };
     messageElement.parentElement.appendChild(btn);
+    if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
+let _aiMessageInFlight = false;
+
 async function sendAIMessage() {
+  // Guard against duplicate fires (Enter + click, or rapid repeat Enter)
+  // stacking multiple error bubbles for a single question.
+  if (_aiMessageInFlight) return;
+
   const input = document.getElementById('ai-input');
   const question = input.value.trim();
   if (!question) return;
@@ -1259,39 +1321,75 @@ async function sendAIMessage() {
   aiChatHistory.push({ role: 'user', parts: [{ text: question }] });
 
   showAITyping(true);
-   
+  _aiMessageInFlight = true;
+  const sendBtn = document.getElementById('ai-send-btn');
+  if (sendBtn) sendBtn.disabled = true;
+
+  // ── Helper: show answer with word-by-word animation ──
+  function _showAIReply(replyText, source) {
+    const msgs = document.getElementById('ai-messages');
+    const wrap = document.createElement('div');
+    wrap.className = 'ai-msg-ai-wrap';
+    const sourceTag = source === 'offline'
+      ? '<div style="font-size:10px;color:#94a3b8;margin-bottom:4px;font-weight:600;"><i data-lucide="wifi-off" style="width:10px;height:10px;vertical-align:middle;"></i> Offline AI</div>'
+      : '';
+    wrap.innerHTML = `<div class="ai-gem-avatar"><i data-lucide="sparkles" style="width:18px;height:18px;"></i></div><div class="ai-msg-ai">${sourceTag}<div id="ai-reply-target-${Date.now()}"></div></div>`;
+    msgs.appendChild(wrap);
+    if (typeof lucide !== 'undefined') lucide.createIcons({ nodes: [wrap] });
+    msgs.scrollTop = msgs.scrollHeight;
+
+    const replyTarget = wrap.querySelector('[id^="ai-reply-target-"]');
+    const rawReply = escHtml(replyText)
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\n\n/g, '<br><br>')
+      .replace(/\n/g, '<br>');
+
+    const words = rawReply.split(/(\s+)/);
+    let wordIndex = 0;
+    function printWordByWord() {
+      if (wordIndex < words.length) {
+        const span = document.createElement("span");
+        span.innerHTML = words[wordIndex];
+        span.style.opacity = "0";
+        span.style.filter = "blur(3px)";
+        span.style.transition = "opacity 0.2s ease-out, filter 0.2s ease-out";
+        span.style.display = "inline-block";
+        span.style.whiteSpace = "pre-wrap";
+        replyTarget.appendChild(span);
+        requestAnimationFrame(() => {
+          span.style.opacity = "1";
+          span.style.filter = "blur(0px)";
+        });
+        wordIndex++;
+        msgs.scrollTop = msgs.scrollHeight;
+        setTimeout(printWordByWord, 25);
+      } else {
+        addSpeakButton(replyTarget);
+      }
+    }
+    printWordByWord();
+  }
+
   try {
+    // ── Step 1: Try online AI via backend ─────────────────────────────────
+    let onlineSucceeded = false;
     let token = sessionStorage.getItem('vaultSessionToken') ||
-                  sessionStorage.getItem('vaultSession') ||
-                  localStorage.getItem('sessionToken') || '';
+                  sessionStorage.getItem('vaultSession') || '';
 
     // If token is an offline placeholder, try silent re-auth for a real one
     if (token.startsWith('offline-') && typeof _silentReAuth === 'function') {
       const fresh = await _silentReAuth();
-      if (fresh) {
+      if (fresh && !fresh.startsWith('offline-')) {
         token = fresh;
         sessionStorage.setItem('vaultSessionToken', fresh);
         sessionStorage.setItem('vaultSession', fresh);
       }
     }
 
-    let res = await fetch('https://backend.shinumaths989.workers.dev/ai-search', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({ question })
-    });
-
-    // If server says unauthorized, try silent re-auth and retry once
-    if (res.status === 401 && typeof _silentReAuth === 'function') {
-      const fresh = await _silentReAuth();
-      if (fresh) {
-        token = fresh;
-        sessionStorage.setItem('vaultSessionToken', fresh);
-        sessionStorage.setItem('vaultSession', fresh);
-        res = await fetch('https://backend.shinumaths989.workers.dev/ai-search', {
+    // Only attempt online if we have a real token
+    if (!token.startsWith('offline-')) {
+      try {
+        let res = await fetch('https://backend.shinumaths989.workers.dev/ai-search', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -1299,75 +1397,66 @@ async function sendAIMessage() {
           },
           body: JSON.stringify({ question })
         });
+
+        // If server says unauthorized, try silent re-auth and retry once
+        if (res.status === 401 && typeof _silentReAuth === 'function') {
+          const fresh = await _silentReAuth();
+          if (fresh && !fresh.startsWith('offline-')) {
+            token = fresh;
+            sessionStorage.setItem('vaultSessionToken', fresh);
+            sessionStorage.setItem('vaultSession', fresh);
+            res = await fetch('https://backend.shinumaths989.workers.dev/ai-search', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+              },
+              body: JSON.stringify({ question })
+            });
+          }
+        }
+
+        const data = await res.json();
+        if (data.success && data.reply) {
+          showAITyping(false);
+          _showAIReply(data.reply, 'online');
+          onlineSucceeded = true;
+        }
+      } catch (onlineErr) {
+        console.warn('[AI Chat] Online request failed:', onlineErr.message);
       }
     }
 
-     const data = await res.json();
-
-    showAITyping(false);
-
-    if (data.success && data.reply) {
-      // Create the AI bubble and animate words into it
-      const msgs = document.getElementById('ai-messages');
-      const wrap = document.createElement('div');
-      wrap.className = 'ai-msg-ai-wrap';
-      wrap.innerHTML = `<div class="ai-gem-avatar">✦</div><div class="ai-msg-ai" id="ai-reply-target-${Date.now()}"></div>`;
-      msgs.appendChild(wrap);
-      msgs.scrollTop = msgs.scrollHeight;
-
-      const replyTarget = wrap.querySelector('[id^="ai-reply-target-"]');
-
-      // Pre-process markdown so bold and line breaks render as HTML
-      // Sanitize: escape HTML first, then apply controlled markdown
-      const rawReply = escHtml(data.reply)
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')  // bold
-        .replace(/\n\n/g, '<br><br>')                       // paragraph breaks
-        .replace(/\n/g, '<br>');                            // single line breaks
-
-      // Split text into words while preserving whitespace
-      const words = rawReply.split(/(\s+)/);
-      let wordIndex = 0;
-
-      function printWordByWord() {
-        if (wordIndex < words.length) {
-          const span = document.createElement("span");
-          span.innerHTML = words[wordIndex]; // innerHTML so HTML tags render
-
-          // Hardware-accelerated fade-in per word
-          span.style.opacity = "0";
-          span.style.filter = "blur(3px)";
-          span.style.transition = "opacity 0.2s ease-out, filter 0.2s ease-out";
-          span.style.display = "inline-block";
-          span.style.whiteSpace = "pre-wrap";
-
-          replyTarget.appendChild(span);
-
-          requestAnimationFrame(() => {
-            span.style.opacity = "1";
-            span.style.filter = "blur(0px)";
-          });
-
-          wordIndex++;
-          msgs.scrollTop = msgs.scrollHeight;
-          setTimeout(printWordByWord, 25);
-        } else {
-          // Animation complete — add the 🔊 Listen button
-          addSpeakButton(replyTarget);
+    // ── Step 2: If online failed, fall back to offline AI ──────────────────
+    if (!onlineSucceeded) {
+      if (window.OfflineAI) {
+        try {
+          const offlineResult = await window.OfflineAI.ask(question, { offline: true });
+          showAITyping(false);
+          if (offlineResult && offlineResult.success && offlineResult.answer) {
+            _showAIReply(offlineResult.answer, 'offline');
+          } else {
+            appendAIBubble('No answer could be generated from cached documents. Try rephrasing your question.');
+          }
+        } catch (offlineErr) {
+          console.error('[AI Chat] Offline AI error:', offlineErr);
+          showAITyping(false);
+          appendAIBubble('AI Chat is currently unavailable. The online service is unreachable and the offline AI model has not been loaded yet. Please connect to the internet and log in to download the AI model.');
         }
+      } else {
+        showAITyping(false);
+        appendAIBubble('AI Chat is currently unavailable. The online service is unreachable and the offline AI module is not loaded. Please check your connection and try again.');
       }
-
-      printWordByWord();
-
-    } else {
-      appendAIBubble(data.error || "An error occurred fetching detailed vault profiles.");
     }
 
   } catch (e) {
-
     console.error(e);
     showAITyping(false);
-    appendAIBubble("An error occurred fetching detailed vault profiles.");
+    appendAIBubble('An unexpected error occurred. Please try again.');
 
+  } finally {
+    _aiMessageInFlight = false;
+    if (sendBtn) sendBtn.disabled = false;
   }
 
 }
@@ -1386,10 +1475,11 @@ function appendAIBubble(text) {
   const wrap = document.createElement('div');
   wrap.className = 'ai-msg-ai-wrap';
   wrap.innerHTML = `
-    <div class="ai-gem-avatar">✦</div>
+    <div class="ai-gem-avatar"><i data-lucide="sparkles" style="width:18px;height:18px;"></i></div>
     <div class="ai-msg-ai">${escHtml(text).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>')}</div>
   `;
   msgs.appendChild(wrap);
+  if (typeof lucide !== 'undefined') lucide.createIcons({ nodes: [wrap] });
   msgs.scrollTop = msgs.scrollHeight;
 }
 
@@ -1401,19 +1491,41 @@ function showAITyping(show) {
          }
 
 /* ========================= STEP 1 ========================= */
-async function hashPassword(password) {
+async function hashPassword(password, useSlowKdf = false) {
   const normalized = password
     .trim()
     .normalize("NFKC");
 
   const encoder = new TextEncoder();
+
+  if (useSlowKdf) {
+    // PBKDF2 + SHA-256 for stronger protection
+    const salt = new TextEncoder().encode('vault-pbkdf2-v1');
+    const keyMaterial = await crypto.subtle.importKey('raw', encoder.encode(normalized), 'PBKDF2', false, ['deriveBits']);
+    const keyBits = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 200000 },
+      keyMaterial, 256
+    );
+    const hashBuffer = await crypto.subtle.digest("SHA-256", new Uint8Array(keyBits));
+    return Array.from(new Uint8Array(hashBuffer))
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  // Legacy SHA-256 only (backward compatibility)
   const data = encoder.encode(normalized);
-
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-
   return Array.from(new Uint8Array(hashBuffer))
     .map(b => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+// Try PBKDF2+SHA-256 first, fall back to legacy SHA-256
+async function hashPasswordWithFallback(password) {
+  const slowHash = await hashPassword(password, true);
+  // Return an array: [newHash, legacyHash]
+  const legacyHash = await hashPassword(password, false);
+  return { slowHash, legacyHash };
 }
    
 /* ==========================================================
@@ -1427,7 +1539,7 @@ async function showStep2() {
 
     if (now < lockUntil) {
         const remaining = Math.ceil((lockUntil - now) / 1000);
-        alert(`Too many wrong attempts.\nTry again in ${remaining} seconds.`);
+        showNotification('Too Many Attempts', 'Try again in '+remaining+' seconds.', {type:'warning'});
         return;
     }
 
@@ -1437,15 +1549,39 @@ async function showStep2() {
     const purpose = document.getElementById("user-purpose").value.trim();
 
     if (!visitorName || !purpose || !pass) {
-        alert("Username, Access Context, and Access Matrix Pin are required.");
+        toastNotify('Username, Access Context, and Access Matrix Pin are required.', 'error');
         return;
+    }
+
+    // ── DEVICE INTEGRITY CHECK ─────────────────────────────────────
+    if (window.__deviceIntegrity) {
+        const risk = window.__deviceIntegrity.getRiskScore();
+        const highFlags = risk.flags.filter(f => f.severity === 'high');
+        if (highFlags.length > 0) {
+            const report = window.__deviceIntegrity.getDeviceReport();
+            const flagDetails = highFlags.map(f => f.rule + ': ' + f.detail).join('\n');
+            console.warn('[DeviceIntegrity] High-risk flags:', highFlags);
+            sendSecurityAlert(
+                'Suspicious device detected\n' + flagDetails +
+                '\nRisk score: ' + risk.score +
+                '\nTrusted: ' + report.trusted +
+                '\nUA: ' + report.userAgent.slice(0, 120)
+            );
+            // Trusted devices get a pass; untrusted devices get blocked on ANY high flag
+            if (!window.__deviceIntegrity.isTrusted()) {
+                try { sendSecurityAlert('Blocked - ' + flagDetails); } catch(e) {}
+                window.location.href = 'https://72oe-v2sx.shine-ministry.com/blocked.html';
+                return;
+            }
+        }
     }
 
     // Acquire primary action node buttons
     const loginBtn = document.getElementById('submitBtn');
     const originalBtnText = loginBtn ? loginBtn.textContent : '';
     if (loginBtn) {
-        loginBtn.textContent = '🔐 Connecting Secure Server...';
+        loginBtn.innerHTML = '<i data-lucide="lock" style="width:14px;height:14px;vertical-align:middle;"></i> Connecting Secure Server...';
+        if (typeof lucide !== 'undefined') lucide.createIcons();
         loginBtn.disabled = true;
         loginBtn.style.opacity = '0.7';
     }
@@ -1473,7 +1609,7 @@ async function showStep2() {
             animation: fadeInUp .3s ease;
         `;
         box.innerHTML = `
-            <div style="font-weight:800;color:var(--danger);font-size:13px;margin-bottom:4px;">⚠️ ${escHtml(title)}</div>
+            <div style="font-weight:800;color:var(--danger);font-size:13px;margin-bottom:4px;"><i data-lucide="alert-triangle" style="width:14px;height:14px;vertical-align:middle;"></i> ${escHtml(title)}</div>
             <div style="font-size:12px;color:#fff;line-height:1.5;">${escHtml(detail)}</div>
             <button onclick="this.parentElement.remove()" style="
                 margin-top:10px;border:none;background:var(--danger);color:white;
@@ -1484,8 +1620,8 @@ async function showStep2() {
         
         // CORRECTION: Target .login-wrapper container instead of obsolete .step-card
         const card = document.querySelector('#step1 .login-wrapper');
-        if (card) card.appendChild(box);
-        else alert(title + ': ' + detail);
+        if (card) { card.appendChild(box); if (typeof lucide !== 'undefined') lucide.createIcons(); }
+        else toastNotify(title + ': ' + detail, 'error');
     };
 
     const fetchWithTimeout = (url, options, ms = 12000) => {
@@ -1497,7 +1633,8 @@ async function showStep2() {
 
     try {
         masterPassword = pass;
-        const hash = await hashPassword(pass);
+        const hashPair = await hashPasswordWithFallback(pass);
+        const hash = hashPair.slowHash; // Try PBKDF2+SHA-256 first
 
         // =================================
         // OFFLINE LOGIN — navigator.onLine is unreliable so we always
@@ -1579,6 +1716,12 @@ if (!sessionStorage.getItem('vaultUser')) {
                         startSessionTimer();
                         startInactivityMonitor();
                         if (typeof listenForForceLogout === 'function') listenForForceLogout();
+                        // Init offline AI (auto-download model for offline path)
+                        if (window.OfflineAI) {
+                            window.OfflineAI.init({ downloadModel: true }).catch(function(e) {
+                                console.warn('[OfflineAI] Init failed:', e);
+                            });
+                        }
                         console.log('[OfflineAuth] Dashboard ready — offline mode active.');
                     };
 
@@ -1637,18 +1780,46 @@ if (!sessionStorage.getItem('vaultUser')) {
         }
 
         if (!res.ok || !result.success || !result.authorized) {
-            restoreLoginBtn();
-            failedAttempts++;
-
-            if (failedAttempts >= 5) {
-                sendSecurityAlert("Multiple failed password attempts");
-                lockUntil = Date.now() + 300000;
-                failedAttempts = 0;
-                showLoginError('Vault Locked', 'Too many unauthorized access requests. Security freeze for 5 minutes.');
-            } else {
-                showLoginError('Authentication Failure', `Incorrect access token matrix sequence. ${5 - failedAttempts} attempts remain.`);
+            // Try legacy SHA-256 hash as fallback (backward compatibility)
+            if (hash !== hashPair.legacyHash) {
+                try {
+                    const legacyRes = await fetchWithTimeout(
+                        "https://backend.shinumaths989.workers.dev/get-secret",
+                        {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ hash: hashPair.legacyHash })
+                        }, 12000
+                    );
+                    if (legacyRes.ok) {
+                        try { result = await legacyRes.json(); } catch {}
+                        if (result && result.success && result.authorized) {
+                            hashPair.slowHash = hashPair.legacyHash; // use legacy hash for TOTP
+                            // Clear failed attempts since legacy worked
+                            failedAttempts = 0;
+                            // Fall through to AUTHORIZED block below
+                            res = legacyRes;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[Auth] Legacy hash fallback also failed:', e.message);
+                }
             }
-            return;
+
+            if (!res.ok || !result.success || !result.authorized) {
+                restoreLoginBtn();
+                failedAttempts++;
+
+                if (failedAttempts >= 5) {
+                    sendSecurityAlert("Multiple failed password attempts");
+                    lockUntil = Date.now() + 300000;
+                    failedAttempts = 0;
+                    showLoginError('Vault Locked', 'Too many unauthorized access requests. Security freeze for 5 minutes.');
+                } else {
+                    showLoginError('Authentication Failure', `Incorrect access token matrix sequence. ${5 - failedAttempts} attempts remain.`);
+                }
+                return;
+            }
         }
 
         // AUTHORIZED — stash result and proceed
@@ -1663,7 +1834,7 @@ if (!sessionStorage.getItem('vaultUser')) {
         // Stash auth data — applied fully only after TOTP passes (or immediately if OTP skipped)
         window._pendingAuthResult = result;
         window._pendingAuthPass   = pass;
-        window._pendingAuthHash   = await hashPassword(pass);
+        window._pendingAuthHash   = hash; // use the hash that worked (slow or legacy fallback)
 
         const otpRequested = window._otpRequested === true;
 
@@ -1692,6 +1863,12 @@ if (!sessionStorage.getItem('vaultUser')) {
 
             window.VAULT_MODE = result.mode;
             sessionStorage.setItem("vaultMode", result.mode);
+
+            // Successful ADMIN auth is a real, backend-verified credential check —
+            // safe to auto-trust this device on it (no separate secret needed).
+            if (result.mode === "ADMIN" && window.__deviceIntegrity) {
+                window.__deviceIntegrity.markTrusted();
+            }
 
             resetInactivityTimer();
 
@@ -1752,7 +1929,7 @@ sessionStorage.setItem('vaultUser', _modeUserMap[result.mode] || 'all');
 function showStep3(){
 
     if(!document.getElementById('terms-tick').checked){
-        alert("You must agree to the declaration.");
+        toastNotify('You must agree to the declaration.', 'error');
         return;
     }
 
@@ -1779,8 +1956,13 @@ function showStep3(){
     step2.classList.add('slide-up-exit');
     setTimeout(()=>{
         step2.style.display = 'none';
-        document.getElementById('step3').style.display = 'flex';
+        const step3 = document.getElementById('step3');
+        step3.style.display = 'flex';
         hideCurtain(150);
+        // Re-render reCAPTCHA now that the container is visible
+        if (typeof grecaptcha !== 'undefined' && step3.querySelector('.g-recaptcha') && !step3.querySelector('.g-recaptcha iframe')) {
+            try { grecaptcha.render(step3.querySelector('.g-recaptcha')); } catch(e) {}
+        }
     }, 700);
 
 }
@@ -1797,10 +1979,20 @@ function onCaptchaSuccess(){
     const vaultLoad = initVault().then(() => {
         vaultPostInit();
         runAIIndexingOnLogin();
+        if (window.OfflineAI) {
+            window.OfflineAI.init({ downloadModel: true }).catch(function(e) {
+                console.warn('[OfflineAI] Init failed:', e);
+            });
+        }
     }).catch(e => {
         console.error('initVault failed:', e);
         vaultPostInit();
         runAIIndexingOnLogin();
+        if (window.OfflineAI) {
+            window.OfflineAI.init({ downloadModel: true }).catch(function(e2) {
+                console.warn('[OfflineAI] Init failed:', e2);
+            });
+        }
     });
 
     setTimeout(() => {
@@ -1833,8 +2025,8 @@ function onCaptchaSuccess(){
                 purpose: document.getElementById('user-purpose').value,
                 loginTime: new Date().toLocaleString(),
                 device: /Mobi|Android/i.test(navigator.userAgent) ? "Mobile" : "Desktop",
-                browser: navigator.userAgent,
-                platform: navigator.platform,
+                browser: /Mobi|Android/i.test(navigator.userAgent) ? "Mobile" : "Desktop",
+                platform: /Mobi|Android/i.test(navigator.userAgent) ? "Mobile" : "Desktop",
                 screen: `${screen.width}x${screen.height}`,
                 timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
             });
@@ -1868,7 +2060,7 @@ function onCaptchaSuccess(){
                 loginTime: new Date().toLocaleString(),
                 ip, location,
                 device: /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile' : 'Desktop',
-                browser: navigator.userAgent
+                browser: /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile' : 'Desktop'
             })
         }).catch(() => {});
     } catch(e) { console.warn('sendLoginEmail error:', e); }
@@ -1917,12 +2109,18 @@ function onCaptchaSuccess(){
                     purpose: data.purpose,
                     loginTime: new Date().toLocaleString(),
                     device: /Mobi|Android/i.test(navigator.userAgent) ? "Mobile" : "Desktop",
-                    browser: navigator.userAgent,
-                    platform: navigator.platform,
+                    browser: /Mobi|Android/i.test(navigator.userAgent) ? "Mobile" : "Desktop",
+                    platform: /Mobi|Android/i.test(navigator.userAgent) ? "Mobile" : "Desktop",
                     screen: `${screen.width}x${screen.height}`,
                     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
                     ipAddress: ip,
-                    location: location
+                    location: location,
+                    deviceIntegrity: window.__deviceIntegrity
+                        ? JSON.stringify({
+                            flags: window.__deviceIntegrity.getFlags().map(f => f.rule),
+                            behaviors: window.__deviceIntegrity.getBehaviorLog()
+                          })
+                        : undefined
                 })
             }
         );
@@ -1988,7 +2186,7 @@ function onCaptchaSuccess(){
                 embeds:[{
 
                     title:
-                    "🚨 SUSPICIOUS VAULT ACTIVITY",
+                    "<i data-lucide='alert-triangle' style='width:14px;height:14px;vertical-align:middle;'></i> SUSPICIOUS VAULT ACTIVITY",
 
                     color:16711680,
 
@@ -2027,8 +2225,7 @@ function onCaptchaSuccess(){
                         {
                             name:"Device",
                             value:
-                            navigator.userAgent
-                            .slice(0,100),
+                            /Mobi|Android/i.test(navigator.userAgent) ? "Mobile" : "Desktop",
                             inline:false
                         }
 
@@ -2105,9 +2302,7 @@ let _forceLogoutInterval = null;
 
             if(data.forceLogout){
 
-                alert(
-                "Administrator terminated your session."
-                );
+                showNotification('Session Terminated', 'An administrator has ended your session.', {type:'error'});
 
                 location.reload();
 
